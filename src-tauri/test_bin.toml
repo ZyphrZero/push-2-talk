@@ -1,0 +1,3 @@
+[[bin]]
+name = "test_api"
+path = "src/test_api.rs"

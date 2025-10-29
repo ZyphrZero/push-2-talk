@@ -1,0 +1,47 @@
+[package]
+name = "push-to-talk"
+version = "0.1.0"
+description = "A push-to-talk speech-to-text application"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+default-run = "push-to-talk"
+
+[lib]
+name = "push_to_talk_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "push-to-talk"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_api"
+path = "src/test_api.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
+cpal = "0.15"
+hound = "3.5"
+rdev = "0.5"
+arboard = "3.4"
+enigo = "0.2"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dirs = "5.0"
+base64 = "0.22"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//g/project/push-to-talk-main/**)",
+      "Bash(node --version:*)",
+      "Bash(npm --version:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo --version:*)",
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(cargo check:*)",
+      "Bash(npm run tauri:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
