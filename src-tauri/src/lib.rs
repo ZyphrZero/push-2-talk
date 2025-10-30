@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_recorder;
+mod beep_player;
 mod config;
 mod hotkey_service;
 mod qwen_asr;
@@ -86,6 +87,9 @@ async fn start_app(
         let app = app_handle_start.clone();
         let recorder = Arc::clone(&audio_recorder_start);
 
+        // 播放开始录音提示音
+        beep_player::play_start_beep();
+
         tauri::async_runtime::spawn(async move {
             tracing::info!("检测到快捷键按下");
             let _ = app.emit("recording_started", ());
@@ -106,6 +110,9 @@ async fn start_app(
         let recorder = Arc::clone(&audio_recorder_stop);
         let inserter = Arc::clone(&text_inserter_stop);
         let key = api_key_clone.clone();
+
+        // 播放停止录音提示音
+        beep_player::play_stop_beep();
 
         tauri::async_runtime::spawn(async move {
             tracing::info!("检测到快捷键释放");
