@@ -15,52 +15,101 @@ function App() {
 
   // 加载配置
   useEffect(() => {
-    loadConfig();
-    setupEventListeners();
+    const init = async () => {
+      try {
+        // 等待 Tauri 完全初始化
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // 先设置事件监听器
+        await setupEventListeners();
+        // 然后加载配置（可能会触发自动启动）
+        await loadConfig();
+      } catch (err) {
+        console.error("初始化失败:", err);
+        setError("应用初始化失败: " + String(err));
+      }
+    };
+
+    init();
   }, []);
 
   const loadConfig = async () => {
     try {
+      console.log("开始加载配置...");
       const config = await invoke<AppConfig>("load_config");
+      console.log("配置加载成功:", { apiKeyLength: config.dashscope_api_key.length });
       setApiKey(config.dashscope_api_key);
+
+      // 如果已经配置了 API Key，自动启动应用
+      if (config.dashscope_api_key && config.dashscope_api_key.trim() !== "") {
+        console.log("检测到已保存的 API Key，自动启动应用...");
+        autoStartApp(config.dashscope_api_key);
+      } else {
+        console.log("未检测到已保存的 API Key");
+      }
     } catch (err) {
       console.error("加载配置失败:", err);
     }
   };
 
-  const setupEventListeners = async () => {
-    // 监听录音开始
-    await listen("recording_started", () => {
-      console.log("录音开始");
-      setStatus("recording");
+  const autoStartApp = async (apiKey: string) => {
+    try {
+      // 确保事件监听器已完全设置
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const result = await invoke<string>("start_app", { apiKey });
+      console.log("自动启动成功:", result);
+      setStatus("running");
       setError(null);
-    });
+    } catch (err) {
+      console.error("自动启动失败:", err);
+      // 自动启动失败不显示错误，让用户手动启动
+      setStatus("idle");
+    }
+  };
 
-    // 监听录音停止
-    await listen("recording_stopped", () => {
-      console.log("录音停止");
-      setStatus("transcribing");
-    });
+  const setupEventListeners = async () => {
+    try {
+      console.log("开始设置事件监听器...");
 
-    // 监听转录中
-    await listen("transcribing", () => {
-      console.log("正在转录...");
-      setStatus("transcribing");
-    });
+      // 监听录音开始
+      await listen("recording_started", () => {
+        console.log("录音开始");
+        setStatus("recording");
+        setError(null);
+      });
 
-    // 监听转录完成
-    await listen<string>("transcription_complete", (event) => {
-      console.log("转录完成:", event.payload);
-      setTranscript(event.payload);
-      setStatus("running");
-    });
+      // 监听录音停止
+      await listen("recording_stopped", () => {
+        console.log("录音停止");
+        setStatus("transcribing");
+      });
 
-    // 监听错误
-    await listen<string>("error", (event) => {
-      console.error("错误:", event.payload);
-      setError(event.payload);
-      setStatus("running");
-    });
+      // 监听转录中
+      await listen("transcribing", () => {
+        console.log("正在转录...");
+        setStatus("transcribing");
+      });
+
+      // 监听转录完成
+      await listen<string>("transcription_complete", (event) => {
+        console.log("转录完成:", event.payload);
+        setTranscript(event.payload);
+        setStatus("running");
+      });
+
+      // 监听错误
+      await listen<string>("error", (event) => {
+        console.error("错误:", event.payload);
+        setError(event.payload);
+        setStatus("running");
+      });
+
+      console.log("事件监听器设置完成");
+    } catch (err) {
+      console.error("设置事件监听器失败:", err);
+      throw err;
+    }
   };
 
   const getStatusColor = () => {
@@ -113,6 +162,10 @@ function App() {
           alert("请先输入 DashScope API Key");
           return;
         }
+        // 启动前先保存配置
+        console.log("启动前保存配置...");
+        await invoke<string>("save_config", { apiKey });
+        console.log("配置保存成功，开始启动应用...");
         const result = await invoke<string>("start_app", { apiKey });
         console.log(result);
         setStatus("running");

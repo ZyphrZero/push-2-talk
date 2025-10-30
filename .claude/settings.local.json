@@ -10,7 +10,12 @@
       "Bash(npm install:*)",
       "Bash(cargo check:*)",
       "Bash(npm run tauri:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\ndocs: 完善项目文档，添加 CLAUDE.md 和项目进展报告\n\n- 新增 CLAUDE.md：为 Claude Code 提供架构指南\n- 新增 项目进展.md：详细记录 MVP 开发进度和完成情况\n- 更新 README.md：添加完整的项目介绍和使用指南\n- 更新 .claude/settings.local.json：添加 git add 权限\n\nMVP 核心功能已完成：\n✅ 全局快捷键录音 (Ctrl+Win)\n✅ 阿里云 Qwen ASR 语音识别\n✅ 自动文本插入\n✅ 配置持久化\n✅ 标点符号自动去除\n✅ 生产构建和打包\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(timeout:*)",
+      "Bash(if not exist \"src-tauri\\capabilities\" mkdir src-tauricapabilities)"
     ],
     "deny": [],
     "ask": []

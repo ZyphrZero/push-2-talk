@@ -18,11 +18,13 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "alwaysOnTop": false
+        "alwaysOnTop": false,
+        "label": "main"
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": ["default"]
     }
   },
   "bundle": {

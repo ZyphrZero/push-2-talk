@@ -25,11 +25,14 @@ impl AppConfig {
 
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
+        tracing::info!("尝试从以下路径加载配置: {:?}", path);
         if path.exists() {
-            let content = std::fs::read_to_string(path)?;
+            let content = std::fs::read_to_string(&path)?;
             let config: AppConfig = serde_json::from_str(&content)?;
+            tracing::info!("配置加载成功，API Key 长度: {}", config.dashscope_api_key.len());
             Ok(config)
         } else {
+            tracing::warn!("配置文件不存在，返回默认配置");
             Ok(Self::new())
         }
     }
@@ -37,7 +40,9 @@ impl AppConfig {
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        tracing::info!("保存配置到: {:?}", path);
+        std::fs::write(&path, content)?;
+        tracing::info!("配置保存成功");
         Ok(())
     }
 }
