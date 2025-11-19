@@ -20,9 +20,6 @@ path = "src/main.rs"
 name = "test_api"
 path = "src/test_api.rs"
 
-[[bin]]
-name = "test_sensevoice"
-path = "src/test_sensevoice.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
