@@ -1,28 +1,32 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { 
-  Mic, 
-  StopCircle, 
-  Settings, 
-  Key, 
-  Activity, 
-  CheckCircle2, 
-  AlertCircle, 
-  Eye, 
+import {
+  Mic,
+  StopCircle,
+  Settings,
+  Key,
+  Activity,
+  CheckCircle2,
+  AlertCircle,
+  Eye,
   EyeOff,
   Cpu,
-  Sparkles
+  Sparkles,
+  Zap,
+  Globe
 } from "lucide-react";
 
 interface AppConfig {
   dashscope_api_key: string;
   siliconflow_api_key: string;
+  use_realtime_asr: boolean;
 }
 
 function App() {
   const [apiKey, setApiKey] = useState("");
   const [fallbackApiKey, setFallbackApiKey] = useState("");
+  const [useRealtime, setUseRealtime] = useState(true); // 默认启用实时模式
   const [showApiKey, setShowApiKey] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "recording" | "transcribing">("idle");
   const [transcript, setTranscript] = useState("");
@@ -76,18 +80,19 @@ function App() {
       const config = await invoke<AppConfig>("load_config");
       setApiKey(config.dashscope_api_key);
       setFallbackApiKey(config.siliconflow_api_key || "");
+      setUseRealtime(config.use_realtime_asr ?? true);
       if (config.dashscope_api_key && config.dashscope_api_key.trim() !== "") {
-        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "");
+        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true);
       }
     } catch (err) {
       console.error("加载配置失败:", err);
     }
   };
 
-  const autoStartApp = async (apiKey: string, fallbackApiKey: string) => {
+  const autoStartApp = async (apiKey: string, fallbackApiKey: string, useRealtimeMode: boolean) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 100));
-      await invoke<string>("start_app", { apiKey, fallbackApiKey });
+      await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime: useRealtimeMode });
       setStatus("running");
       setError(null);
     } catch (err) {
@@ -134,7 +139,7 @@ function App() {
 
   const handleSaveConfig = async () => {
     try {
-      await invoke<string>("save_config", { apiKey, fallbackApiKey });
+      await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime });
       setError(null);
       setShowSuccessToast(true);
       // 3秒后自动消失
@@ -151,8 +156,8 @@ function App() {
           setError("请先输入 DashScope API Key");
           return;
         }
-        await invoke<string>("save_config", { apiKey, fallbackApiKey });
-        await invoke<string>("start_app", { apiKey, fallbackApiKey });
+        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime });
+        await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime });
         setStatus("running");
         setError(null);
       } else {
@@ -324,7 +329,37 @@ function App() {
                 </div>
               </div>
             </div>
-            
+
+            {/* 传输模式切换 */}
+            <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg transition-colors ${useRealtime ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'}`}>
+                  {useRealtime ? <Zap size={18} /> : <Globe size={18} />}
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-slate-700">
+                    {useRealtime ? '实时流式模式' : 'HTTP 传统模式'}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {useRealtime ? '边录边传，延迟更低' : '录完再传，更稳定'}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setUseRealtime(!useRealtime)}
+                disabled={isRunning}
+                className={`relative w-14 h-7 rounded-full transition-all duration-300 ${
+                  useRealtime
+                    ? 'bg-amber-500'
+                    : 'bg-slate-300'
+                } ${isRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-90'}`}
+              >
+                <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-all duration-300 ${
+                  useRealtime ? 'left-7' : 'left-0.5'
+                }`} />
+              </button>
+            </div>
+
             {/* 文档链接 */}
             <div className="flex justify-end gap-4 text-xs text-slate-400">
                <a href="https://help.aliyun.com/zh/dashscope/developer-reference/quick-start" target="_blank" className="hover:text-blue-600 transition-colors flex items-center gap-1">

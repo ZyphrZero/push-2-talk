@@ -8,6 +8,13 @@ pub struct AppConfig {
     pub dashscope_api_key: String,
     #[serde(default)]
     pub siliconflow_api_key: String,
+    /// 是否使用实时流式 ASR（WebSocket 模式）
+    #[serde(default = "default_use_realtime_asr")]
+    pub use_realtime_asr: bool,
+}
+
+fn default_use_realtime_asr() -> bool {
+    true  // 默认启用实时模式
 }
 
 impl AppConfig {
@@ -15,6 +22,7 @@ impl AppConfig {
         Self {
             dashscope_api_key: String::new(),
             siliconflow_api_key: String::new(),
+            use_realtime_asr: default_use_realtime_asr(),
         }
     }
 
