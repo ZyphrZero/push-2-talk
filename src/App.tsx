@@ -1,3 +1,5 @@
+// src/App.tsx
+
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -18,14 +20,27 @@ import {
   XCircle,
   Wand2,
   X,
-  RotateCcw
+  RotateCcw,
+  Plus,
+  Trash2,
+  MessageSquareQuote
 } from "lucide-react";
+import { nanoid } from 'nanoid';
+
+// --- 新的接口定义 ---
+
+interface LlmPreset {
+  id: string;
+  name: string;
+  system_prompt: string;
+}
 
 interface LlmConfig {
   endpoint: string;
   model: string;
   api_key: string;
-  system_prompt: string;
+  presets: LlmPreset[];
+  active_preset_id: string;
 }
 
 interface AppConfig {
@@ -38,38 +53,61 @@ interface AppConfig {
 
 interface TranscriptionResult {
   text: string;
-  original_text: string | null; // 原始 ASR 文本（仅开启 LLM 润色时有值）
+  original_text: string | null;
   asr_time_ms: number;
   llm_time_ms: number | null;
   total_time_ms: number;
 }
 
+// 默认配置
+const DEFAULT_PRESETS: LlmPreset[] = [
+  {
+    id: "polishing",
+    name: "文本润色",
+    system_prompt: "你是一个语音转写润色助手。请在不改变原意的前提下：1）删除重复或意义相近的句子；2）合并同一主题的内容；3）去除「嗯」「啊」等口头禅；4）保留数字与关键信息；5）相关数字和时间不要使用中文；6）整理成自然的段落。输出纯文本即可。"
+  },
+  {
+    id: "email",
+    name: "邮件整理",
+    system_prompt: "你是一个专业的邮件助手。请将用户的语音转写内容整理成一封格式规范、语气得体的工作邮件。请提取核心意图，补充必要的开场白和结语。输出仅包含邮件正文。"
+  },
+  {
+    id: "translation",
+    name: "中译英",
+    system_prompt: "你是一个专业的翻译助手。请将用户的中文语音转写内容翻译成地道、流畅的英文。不要输出任何解释性文字，只输出翻译结果。"
+  }
+];
+
 const DEFAULT_LLM_CONFIG: LlmConfig = {
   endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
   model: "glm-4-flash-250414",
   api_key: "",
-  system_prompt: "你是一个语音转写润色助手。请在不改变原意的前提下：1）删除重复或意义相近的句子；2）合并同一主题的内容；3）去除「嗯」「啊」等口头禅；4）保留数字与关键信息；5）相关数字和时间不要使用中文；6）整理成自然的段落。输出纯文本即可。"
+  presets: DEFAULT_PRESETS,
+  active_preset_id: "polishing"
 };
 
 function App() {
   const [apiKey, setApiKey] = useState("");
   const [fallbackApiKey, setFallbackApiKey] = useState("");
-  const [useRealtime, setUseRealtime] = useState(true); // 默认启用实时模式
-  const [enablePostProcess, setEnablePostProcess] = useState(false); // LLM 后处理开关
-  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG); // LLM 配置
-  const [showLlmModal, setShowLlmModal] = useState(false); // LLM 配置弹框
+  const [useRealtime, setUseRealtime] = useState(true);
+  const [enablePostProcess, setEnablePostProcess] = useState(false);
+  const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
+  const [showLlmModal, setShowLlmModal] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "recording" | "transcribing">("idle");
   const [transcript, setTranscript] = useState("");
   const [originalTranscript, setOriginalTranscript] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [asrTime, setAsrTime] = useState<number | null>(null); // ASR 转录耗时
-  const [llmTime, setLlmTime] = useState<number | null>(null); // LLM 润色耗时
-  const [totalTime, setTotalTime] = useState<number | null>(null); // 总耗时
+  const [asrTime, setAsrTime] = useState<number | null>(null);
+  const [llmTime, setLlmTime] = useState<number | null>(null);
+  const [totalTime, setTotalTime] = useState<number | null>(null);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
-  // 用于转录框自动滚动到底部
+  
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // 获取当前选中的预设对象
+  const activePreset = llmConfig.presets.find(p => p.id === llmConfig.active_preset_id) || llmConfig.presets[0];
 
   useEffect(() => {
     if (transcriptEndRef.current) {
@@ -77,7 +115,6 @@ function App() {
     }
   }, [transcript]);
 
-  // 加载配置
   useEffect(() => {
     const init = async () => {
       try {
@@ -92,7 +129,6 @@ function App() {
     init();
   }, []);
 
-  // 计时器逻辑
   useEffect(() => {
     let interval: number;
     if (status === "recording") {
@@ -113,9 +149,25 @@ function App() {
       setFallbackApiKey(config.siliconflow_api_key || "");
       setUseRealtime(config.use_realtime_asr ?? true);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
-      setLlmConfig(config.llm_config || DEFAULT_LLM_CONFIG);
+      
+      // 修改这里：
+      // 只要 config.llm_config 存在，我们就直接用。
+      // 不再判断 presets.length === 0 就强行填充 DEFAULT_PRESETS。
+      // 这样如果你在 UI 上删光了预设，下次进来就是空的，你可以从头开始加。
+      const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
+      
+      // 只有当 active_preset_id 无效时（比如对应的预设被删了），才重置选中状态
+      if (loadedLlmConfig.presets && loadedLlmConfig.presets.length > 0) {
+          const activeExists = loadedLlmConfig.presets.find(p => p.id === loadedLlmConfig.active_preset_id);
+          if (!activeExists) {
+              loadedLlmConfig.active_preset_id = loadedLlmConfig.presets[0].id;
+          }
+      }
+
+      setLlmConfig(loadedLlmConfig);
+
       if (config.dashscope_api_key && config.dashscope_api_key.trim() !== "") {
-        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, config.llm_config || DEFAULT_LLM_CONFIG);
+        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, loadedLlmConfig);
       }
     } catch (err) {
       console.error("加载配置失败:", err);
@@ -178,7 +230,6 @@ function App() {
       await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig });
       setError(null);
       setShowSuccessToast(true);
-      // 3秒后自动消失
       setTimeout(() => setShowSuccessToast(false), 3000);
     } catch (err) {
       setError(String(err));
@@ -213,19 +264,55 @@ function App() {
     }
   };
 
-  // UI 辅助函数
+  // --- 预设管理函数 ---
+
+  const handleAddPreset = () => {
+    const newPreset: LlmPreset = {
+      id: nanoid(8),
+      name: "新预设",
+      system_prompt: ""
+    };
+    setLlmConfig(prev => ({
+      ...prev,
+      presets: [...prev.presets, newPreset],
+      active_preset_id: newPreset.id
+    }));
+  };
+
+  const handleDeletePreset = (id: string) => {
+    if (llmConfig.presets.length <= 1) return; // 至少保留一个
+    
+    setLlmConfig(prev => {
+      const newPresets = prev.presets.filter(p => p.id !== id);
+      // 如果删除了当前选中的，选中第一个
+      const newActiveId = prev.active_preset_id === id ? newPresets[0].id : prev.active_preset_id;
+      return {
+        ...prev,
+        presets: newPresets,
+        active_preset_id: newActiveId
+      };
+    });
+  };
+
+  const handleUpdateActivePreset = (key: keyof LlmPreset, value: string) => {
+    setLlmConfig(prev => ({
+      ...prev,
+      presets: prev.presets.map(p => 
+        p.id === prev.active_preset_id ? { ...p, [key]: value } : p
+      )
+    }));
+  };
+
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
   const isRunning = status !== "idle";
 
   return (
-    // 背景：使用细腻的网格渐变，模仿 macOS 壁纸质感
     <div className="min-h-screen w-full bg-[#f5f5f7] text-slate-800 font-sans selection:bg-blue-500/20 selection:text-blue-700 flex items-center justify-center p-6">
       
-      {/* 主容器：Glassmorphism 风格 */}
       <div className="w-full max-w-3xl bg-white/80 backdrop-blur-2xl border border-white/50 shadow-2xl rounded-3xl overflow-hidden transition-all duration-500">
         
-        {/* 顶部状态栏 */}
+        {/* Top Status Bar */}
         <div className="px-6 py-4 border-b border-slate-100/50 flex items-center justify-between bg-white/40">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-500/10 rounded-xl text-blue-600">
@@ -237,7 +324,6 @@ function App() {
             </div>
           </div>
 
-          {/* 状态胶囊 */}
           <div className="flex items-center gap-2">
             <div className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
               isRecording ? "bg-red-50 border-red-100 text-red-600" :
@@ -263,7 +349,6 @@ function App() {
                  status === "running" ? "运行中 (Ctrl+Win)" : "已停止"}
               </span>
             </div>
-            {/* 取消按钮 - 仅在录音或转录中显示 */}
             {(isRecording || isTranscribing) && (
               <button
                 onClick={handleCancelTranscription}
@@ -276,7 +361,6 @@ function App() {
           </div>
         </div>
 
-        {/* 自定义 Toast 提示气泡  */}
         <div className={`absolute top-24 left-0 right-0 flex justify-center pointer-events-none transition-all duration-500 z-10 ${
             showSuccessToast ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'
           }`}>
@@ -287,8 +371,6 @@ function App() {
         </div>
 
         <div className="p-6 space-y-5">
-          
-          {/* 错误提示条 */}
           {error && (
             <div className="flex items-center gap-3 p-4 bg-red-50/80 border border-red-100 rounded-2xl text-red-600 text-sm animate-in slide-in-from-top-2 fade-in duration-300">
               <AlertCircle size={18} />
@@ -296,7 +378,7 @@ function App() {
             </div>
           )}
 
-          {/* 转录显示区域 - 模仿 iOS 备忘录 */}
+          {/* Transcript Display Area */}
           <div className="relative group">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-300 to-indigo-300 rounded-2xl blur opacity-20 group-hover:opacity-40 transition duration-500"></div>
             <div className="relative flex flex-col h-64 bg-white/60 backdrop-blur-sm border border-white/60 rounded-2xl p-6 shadow-inner transition-all">
@@ -328,11 +410,8 @@ function App() {
                 )}
               </div>
 
-              {/* 内容区域 - 根据是否有原始文本决定布局 */}
               {originalTranscript ? (
-                // 双栏布局：原始文本 + 润色文本
                 <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
-                  {/* 左侧：原始文本 */}
                   <div className="flex flex-col min-h-0 border-r border-slate-200 pr-4">
                     <div className="text-xs text-slate-400 mb-2 flex items-center gap-1">
                       <Mic size={12} /> 原始转录
@@ -341,10 +420,11 @@ function App() {
                       <p className="text-slate-500 text-sm leading-relaxed whitespace-pre-wrap">{originalTranscript}</p>
                     </div>
                   </div>
-                  {/* 右侧：润色文本 */}
                   <div className="flex flex-col min-h-0">
                     <div className="text-xs text-violet-500 mb-2 flex items-center gap-1">
-                      <Wand2 size={12} /> LLM 润色
+                      <Wand2 size={12} /> 
+                      {/* 显示使用的预设名称 */}
+                      {llmConfig.presets.find(p => p.id === llmConfig.active_preset_id)?.name || "智能"}润色
                     </div>
                     <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
                       <p className="text-slate-700 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
@@ -353,7 +433,6 @@ function App() {
                   </div>
                 </div>
               ) : (
-                // 单栏布局：仅显示转录文本
                 <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
                   {transcript ? (
                     <p className="text-slate-700 text-lg leading-relaxed whitespace-pre-wrap">{transcript}</p>
@@ -369,7 +448,7 @@ function App() {
             </div>
           </div>
 
-          {/* 设置区域 */}
+          {/* Settings Area */}
           <div className="space-y-5">
             <div className="flex items-center gap-2 text-slate-900 font-semibold">
               <Settings size={18} />
@@ -377,7 +456,6 @@ function App() {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* 主 API Input */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-600 ml-1">DashScope (千问)</label>
                 <div className="relative group">
@@ -401,7 +479,6 @@ function App() {
                 </div>
               </div>
 
-              {/* 备用 API Input */}
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <label className="text-sm font-medium text-slate-600 ml-1">SiliconFlow (备用)</label>
@@ -423,7 +500,7 @@ function App() {
               </div>
             </div>
 
-            {/* 传输模式切换 */}
+            {/* Mode Switches */}
             <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
               <div className="flex items-center gap-3">
                 <div className={`p-2 rounded-lg transition-colors ${useRealtime ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'}`}>
@@ -453,15 +530,19 @@ function App() {
               </button>
             </div>
 
-            {/* LLM 后处理开关 */}
             <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
               <div className="flex items-center gap-3">
                 <div className={`p-2 rounded-lg transition-colors ${enablePostProcess ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-400'}`}>
                   <Wand2 size={18} />
                 </div>
-                <div>
-                  <div className="text-sm font-medium text-slate-700">
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
                     LLM 智能润色
+                    {enablePostProcess && (
+                      <span className="text-[10px] bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded border border-violet-200">
+                        {activePreset?.name}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-slate-400">
                     {enablePostProcess ? '自动去重、润色转录文本' : '直接输出原始转录'}
@@ -469,13 +550,12 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {/* 配置按钮 */}
                 {enablePostProcess && (
                   <button
                     onClick={() => setShowLlmModal(true)}
                     disabled={isRunning}
                     className="p-2 rounded-lg bg-violet-50 text-violet-600 hover:bg-violet-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="配置 LLM"
+                    title="配置预设"
                   >
                     <Settings size={16} />
                   </button>
@@ -496,7 +576,6 @@ function App() {
               </div>
             </div>
 
-            {/* LLM 未配置提示 */}
             {enablePostProcess && !llmConfig.api_key && (
               <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-100 rounded-xl text-amber-600 text-xs animate-in slide-in-from-top-2 fade-in duration-300">
                 <AlertCircle size={14} />
@@ -504,7 +583,6 @@ function App() {
               </div>
             )}
 
-            {/* 文档链接 */}
             <div className="flex justify-end gap-4 text-xs text-slate-400">
                <a href="https://help.aliyun.com/zh/dashscope/developer-reference/quick-start" target="_blank" className="hover:text-blue-600 transition-colors flex items-center gap-1">
                  DashScope 文档 ↗
@@ -516,9 +594,8 @@ function App() {
           </div>
         </div>
 
-        {/* 底部操作栏 */}
+        {/* Bottom Actions */}
         <div className="px-6 py-4 bg-slate-50/80 backdrop-blur border-t border-slate-100 flex items-center gap-4">
-          
           <button
             onClick={handleSaveConfig}
             disabled={isRunning}
@@ -550,11 +627,12 @@ function App() {
         </div>
       </div>
 
-      {/* LLM 配置弹框 */}
+      {/* Enhanced LLM Configuration Modal */}
       {showLlmModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] overflow-hidden animate-in zoom-in-95 duration-200">
-            {/* 弹框头部 */}
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            
+            {/* Modal Header */}
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-violet-50 to-purple-50">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-violet-100 rounded-xl text-violet-600">
@@ -562,101 +640,181 @@ function App() {
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-slate-900">LLM 润色配置</h3>
-                  <p className="text-xs text-slate-500">自定义模型、API 地址和提示词</p>
+                  <p className="text-xs text-slate-500">管理不同场景的提示词预设</p>
                 </div>
               </div>
-              <button
-                onClick={() => setShowLlmModal(false)}
-                className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
-              >
+              <button onClick={() => setShowLlmModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
                 <X size={20} />
               </button>
             </div>
 
-            {/* 弹框内容 */}
-            <div className="p-6 space-y-5 overflow-y-auto max-h-[60vh]">
-              {/* API 地址 */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">API 地址</label>
-                <input
-                  type="text"
-                  value={llmConfig.endpoint}
-                  onChange={(e) => setLlmConfig({ ...llmConfig, endpoint: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all"
-                  placeholder="https://api.openai.com/v1/chat/completions"
-                />
-                <p className="text-xs text-slate-400">支持 OpenAI 兼容格式的 API</p>
-              </div>
-
-              {/* 模型名称 */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">模型名称</label>
-                <input
-                  type="text"
-                  value={llmConfig.model}
-                  onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all"
-                  placeholder="gpt-4o-mini"
-                />
-              </div>
-
-              {/* API Key */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">API Key</label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    value={llmConfig.api_key}
-                    onChange={(e) => setLlmConfig({ ...llmConfig, api_key: e.target.value })}
-                    className="w-full px-4 py-3 pr-10 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all"
-                    placeholder="sk-..."
-                  />
-                  <button
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
+            {/* Modal Body - 2 Columns */}
+            <div className="flex-1 flex overflow-hidden">
+              
+              {/* Left Sidebar: Presets List */}
+              <div className="w-1/3 bg-slate-50 border-r border-slate-200 flex flex-col">
+                <div className="p-4 border-b border-slate-200 bg-slate-50/50">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">场景预设</h4>
+                  <button 
+                    onClick={handleAddPreset}
+                    className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-600 font-medium hover:border-violet-300 hover:text-violet-600 transition-all flex items-center justify-center gap-2 shadow-sm"
                   >
-                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    <Plus size={14} /> 新增预设
                   </button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {llmConfig.presets.map(preset => (
+                    <div 
+                      key={preset.id}
+                      onClick={() => setLlmConfig(prev => ({ ...prev, active_preset_id: preset.id }))}
+                      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
+                        llmConfig.active_preset_id === preset.id 
+                          ? 'bg-white shadow-md border border-violet-100 ring-1 ring-violet-500/20' 
+                          : 'hover:bg-slate-100 border border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`p-1.5 rounded-lg ${
+                          llmConfig.active_preset_id === preset.id ? 'bg-violet-100 text-violet-600' : 'bg-slate-200 text-slate-500'
+                        }`}>
+                          <MessageSquareQuote size={14} />
+                        </div>
+                        <span className={`text-sm font-medium ${
+                          llmConfig.active_preset_id === preset.id ? 'text-slate-900' : 'text-slate-600'
+                        }`}>
+                          {preset.name}
+                        </span>
+                      </div>
+                      
+                      {llmConfig.presets.length > 1 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeletePreset(preset.id); }}
+                          className={`p-1.5 rounded-md text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 ${
+                            llmConfig.active_preset_id === preset.id ? 'opacity-100' : ''
+                          }`}
+                          title="删除预设"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              {/* System Prompt */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-slate-700">System Prompt</label>
-                  <button
-                    onClick={() => setLlmConfig({ ...llmConfig, system_prompt: DEFAULT_LLM_CONFIG.system_prompt })}
-                    className="text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1 transition-colors"
-                  >
-                    <RotateCcw size={12} /> 重置默认
-                  </button>
+              {/* Right Content: Preset Details & Global Config */}
+              <div className="flex-1 flex flex-col bg-white overflow-hidden">
+                
+                {/* Active Preset Editor */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                  
+                  {/* Preset Name */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">预设名称</label>
+                    <input
+                      type="text"
+                      value={activePreset?.name || ""}
+                      onChange={(e) => handleUpdateActivePreset('name', e.target.value)}
+                      className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-medium text-slate-900"
+                      placeholder="例如：邮件整理"
+                    />
+                  </div>
+
+                  {/* System Prompt */}
+                  <div className="space-y-2 flex-1 flex flex-col">
+                    <div className="flex justify-between items-center">
+                      <label className="text-sm font-medium text-slate-700">系统提示词 (System Prompt)</label>
+                      <button
+                        onClick={() => {
+                          const original = DEFAULT_PRESETS.find(p => p.id === activePreset.id);
+                          if(original) handleUpdateActivePreset('system_prompt', original.system_prompt);
+                        }}
+                        className="text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1 transition-colors"
+                      >
+                        <RotateCcw size={12} /> 恢复默认
+                      </button>
+                    </div>
+                    <textarea
+                      value={activePreset?.system_prompt || ""}
+                      onChange={(e) => handleUpdateActivePreset('system_prompt', e.target.value)}
+                      className="w-full flex-1 min-h-[200px] p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all resize-none font-mono text-slate-600 leading-relaxed"
+                      placeholder="在这里定义 AI 的行为，例如：你是一个翻译助手..."
+                    />
+                  </div>
+
+                  <div className="h-px bg-slate-100 my-6"></div>
+
+                  {/* Global Settings Section (Collapsed style) */}
+                  <div className="space-y-4">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">全局模型设置</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* API Key */}
+                      <div className="col-span-2 space-y-1.5">
+                        <label className="text-xs font-medium text-slate-500">API Key</label>
+                        <div className="relative">
+                          <input
+                            type={showApiKey ? "text" : "password"}
+                            value={llmConfig.api_key}
+                            onChange={(e) => setLlmConfig({ ...llmConfig, api_key: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                            placeholder="sk-..."
+                          />
+                          <button
+                            onClick={() => setShowApiKey(!showApiKey)}
+                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                          >
+                            {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Model */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-slate-500">模型名称</label>
+                        <input
+                          type="text"
+                          value={llmConfig.model}
+                          onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                          placeholder="gpt-4o-mini"
+                        />
+                      </div>
+
+                      {/* Endpoint */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-slate-500">API 地址</label>
+                        <input
+                          type="text"
+                          value={llmConfig.endpoint}
+                          onChange={(e) => setLlmConfig({ ...llmConfig, endpoint: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                          placeholder="https://api..."
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                 </div>
-                <textarea
-                  value={llmConfig.system_prompt}
-                  onChange={(e) => setLlmConfig({ ...llmConfig, system_prompt: e.target.value })}
-                  rows={4}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all resize-none"
-                  placeholder="输入系统提示词..."
-                />
               </div>
             </div>
 
-            {/* 弹框底部 */}
+            {/* Modal Footer */}
             <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
               <button
                 onClick={() => setShowLlmModal(false)}
                 className="px-5 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
               >
-                取消
+                关闭
               </button>
               <button
                 onClick={() => {
-                  setShowLlmModal(false);
                   handleSaveConfig();
+                  setShowLlmModal(false);
                 }}
                 className="px-5 py-2.5 text-sm font-medium text-white bg-violet-500 hover:bg-violet-600 rounded-xl shadow-lg shadow-violet-500/20 transition-all"
               >
-                保存配置
+                保存并应用
               </button>
             </div>
           </div>
