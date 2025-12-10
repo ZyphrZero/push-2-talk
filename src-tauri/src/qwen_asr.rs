@@ -14,12 +14,13 @@ pub struct QwenASRClient {
 
 impl QwenASRClient {
     pub fn new(api_key: String) -> Self {
-        // 创建带超时配置的HTTP客户端
+        // 创建带超时配置的HTTP客户端（禁用代理，始终直连）
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(6))  // 6秒总超时
-            .connect_timeout(Duration::from_secs(5))  // 5秒连接超时
-            .pool_idle_timeout(Duration::from_secs(30))  // 30秒空闲超时，快速释放卡住的连接
-            .pool_max_idle_per_host(10)  // 增加连接池大小，避免连接耗尽
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -170,10 +171,11 @@ pub struct SenseVoiceClient {
 impl SenseVoiceClient {
     pub fn new(api_key: String) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(6))  // 6秒总超时
-            .connect_timeout(Duration::from_secs(5))
-            .pool_idle_timeout(Duration::from_secs(30))  // 30秒空闲超时
-            .pool_max_idle_per_host(10)  // 增加连接池大小
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 

@@ -16,7 +16,7 @@ PushToTalk 是一个高性能的桌面语音输入工具。它不仅仅是一个
 
 ### ✨ 核心特性
 
-- ⚡ **实时流式转录** - 采用 WebSocket 边录边传，极低延迟，松手即出字。
+- ⚡ **支持实时流式转录** - 采用 WebSocket 边录边传，极低延迟，松手即出字。
 - 🧠 **LLM 智能后处理** - 内置 "文本润色"、"邮件整理"、"中译英" 等预设，支持自定义 Prompt。
 - 🎤 **全局快捷键** - 在任何应用中（包括全屏游戏或 IDE）按住 `Ctrl+Win` 即可录音。
 - 🔄 **双模引擎 & 自动备备** - 默认使用 Qwen Realtime 引擎，网络不佳时自动降级到 HTTP 模式，并支持 SiliconFlow (SenseVoice) 作为备用渠道。
@@ -29,19 +29,21 @@ PushToTalk 是一个高性能的桌面语音输入工具。它不仅仅是一个
 
 ### 安装
 
-1. 下载最新版本的安装包（位于 `src-tauri/target/release/bundle/`）：
-   - MSI 安装包：`PushToTalk_0.1.0_x64_en-US.msi`
-   - NSIS 安装程序：`PushToTalk_0.1.0_x64-setup.exe`
+1. 下载最新版本的安装包
 
 2. 运行安装程序完成安装
 
-3. ⚠️ **重要**：右键点击应用图标，选择"以管理员身份运行"
+3. 右键点击应用图标，选择"以管理员身份运行"
 
 ### 配置
 
 1. 启动应用，点击右上角设置图标。
-2. **ASR 配置**: 输入阿里云 DashScope API Key (必填)。
-3. **LLM 配置** (可选): 开启 "LLM 智能润色"，输入对应的 API Key (支持 DashScope 或其他 OpenAI 兼容接口)。
+2. **ASR 配置**: 
+- 输入阿里云 DashScope API Key (必填)。（超大量的免费额度，明年3月前基本上用不完）
+[获取 API Key](https://bailian.console.aliyun.com/?tab=model#/api-key)
+- 输入硅基流动  API Key (可选)。（免费）
+[获取 API Key](https://cloud.siliconflow.cn/me/account/ak)
+3. **LLM 配置** (可选): 开启 "LLM 智能润色"，输入对应的 API Key (支持  OpenAI 兼容接口)。（推荐使用免费的智谱glm-4-flash-250414）
 4. 点击 "保存配置" 并 "启动助手"。
 
 ### 使用
