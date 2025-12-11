@@ -159,6 +159,7 @@ async fn start_app(
     let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
     let api_key_start = api_key.clone();
+    let is_running_start = Arc::clone(&state.is_running);
 
     let app_handle_stop = app_handle.clone();
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
@@ -170,9 +171,16 @@ async fn start_app(
     let qwen_client_stop = Arc::clone(&state.qwen_client);
     let sensevoice_client_stop = Arc::clone(&state.sensevoice_client);
     let use_realtime_stop = use_realtime_mode;
+    let is_running_stop = Arc::clone(&state.is_running);
 
     // 按键按下回调
     let on_start = move || {
+        // 检查服务是否仍在运行
+        if !*is_running_start.lock().unwrap() {
+            tracing::debug!("服务已停止，忽略快捷键按下事件");
+            return;
+        }
+
         let app = app_handle_start.clone();
         let recorder = Arc::clone(&audio_recorder_start);
         let streaming_recorder = Arc::clone(&streaming_recorder_start);
@@ -276,6 +284,12 @@ async fn start_app(
 
     // 按键释放回调
     let on_stop = move || {
+        // 检查服务是否仍在运行
+        if !*is_running_stop.lock().unwrap() {
+            tracing::debug!("服务已停止，忽略快捷键释放事件");
+            return;
+        }
+
         let app = app_handle_stop.clone();
         let recorder = Arc::clone(&audio_recorder_stop);
         let streaming_recorder = Arc::clone(&streaming_recorder_stop);
