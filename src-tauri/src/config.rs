@@ -4,11 +4,57 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use anyhow::Result;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AsrProvider {
+    Qwen,
+    Doubao,
+    #[serde(rename = "siliconflow")]
+    SiliconFlow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrProviderConfig {
+    pub provider: AsrProvider,
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrConfig {
+    pub primary: AsrProviderConfig,
+    #[serde(default)]
+    pub fallback: Option<AsrProviderConfig>,
+    #[serde(default)]
+    pub enable_fallback: bool,
+}
+
+impl Default for AsrConfig {
+    fn default() -> Self {
+        Self {
+            primary: AsrProviderConfig {
+                provider: AsrProvider::Qwen,
+                api_key: String::new(),
+                app_id: None,
+                access_token: None,
+            },
+            fallback: None,
+            enable_fallback: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub dashscope_api_key: String,
     #[serde(default)]
     pub siliconflow_api_key: String,
+    #[serde(default)]
+    pub asr_config: AsrConfig,
     #[serde(default = "default_use_realtime_asr")]
     pub use_realtime_asr: bool,
     #[serde(default)]
@@ -93,6 +139,7 @@ impl AppConfig {
         Self {
             dashscope_api_key: String::new(),
             siliconflow_api_key: String::new(),
+            asr_config: AsrConfig::default(),
             use_realtime_asr: default_use_realtime_asr(),
             enable_llm_post_process: false,
             llm_config: LlmConfig::default(),
@@ -113,18 +160,29 @@ impl AppConfig {
         tracing::info!("尝试从以下路径加载配置: {:?}", path);
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            
-            // 修改这里：直接反序列化，不再强制填充默认值
-            // 如果用户把 presets 删光了，这里读出来的就是空的，我们尊重用户的选择
             let mut config: AppConfig = serde_json::from_str(&content)?;
-            
-            // 只有当这是极其古老的配置文件（完全没有 presets 字段时），serde 才会使用 Default trait
-            // 这里我们做一个最小的防守：如果当前没有任何 active_preset_id，由于逻辑需要，我们重置为默认的第一个
-            // 但如果 presets 列表是空的（用户删光了），我们就不管了，前端会处理显示问题
+
+            // 迁移逻辑：如果 asr_config 为空但旧字段有值，自动迁移
+            if config.asr_config.primary.api_key.is_empty() && !config.dashscope_api_key.is_empty() {
+                tracing::info!("检测到旧配置格式，自动迁移到新格式");
+                config.asr_config.primary = AsrProviderConfig {
+                    provider: AsrProvider::Qwen,
+                    api_key: config.dashscope_api_key.clone(),
+                    app_id: None,
+                    access_token: None,
+                };
+                if !config.siliconflow_api_key.is_empty() {
+                    config.asr_config.fallback = Some(AsrProviderConfig {
+                        provider: AsrProvider::SiliconFlow,
+                        api_key: config.siliconflow_api_key.clone(),
+                        app_id: None,
+                        access_token: None,
+                    });
+                    config.asr_config.enable_fallback = true;
+                }
+            }
+
             if config.llm_config.presets.is_empty() {
-                 // 如果用户真的删光了所有预设，为了防止程序出错，我们可以不仅不做操作
-                 // 或者你可以选择在这里恢复默认，看你的需求。
-                 // 既然你希望"删除了既定的，会永久删除"，那么这里我们什么都不做。
                  tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }
 
@@ -132,7 +190,6 @@ impl AppConfig {
             Ok(config)
         } else {
             tracing::warn!("配置文件不存在，创建并返回默认配置");
-            // 只有在第一次运行（没有配置文件）时，才使用 default_presets() 里定义的那个单一预设
             Ok(Self::new())
         }
     }

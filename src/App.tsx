@@ -7,13 +7,11 @@ import {
   Mic,
   StopCircle,
   Settings,
-  Key,
   Activity,
   CheckCircle2,
   AlertCircle,
   Eye,
   EyeOff,
-  Cpu,
   Sparkles,
   Zap,
   Globe,
@@ -33,6 +31,21 @@ import { nanoid } from 'nanoid';
 
 // --- 新的接口定义 ---
 
+type AsrProvider = 'qwen' | 'doubao' | 'siliconflow';
+
+interface AsrProviderConfig {
+  provider: AsrProvider;
+  api_key: string;
+  app_id?: string;
+  access_token?: string;
+}
+
+interface AsrConfig {
+  primary: AsrProviderConfig;
+  fallback: AsrProviderConfig | null;
+  enable_fallback: boolean;
+}
+
 interface LlmPreset {
   id: string;
   name: string;
@@ -50,6 +63,7 @@ interface LlmConfig {
 interface AppConfig {
   dashscope_api_key: string;
   siliconflow_api_key: string;
+  asr_config: AsrConfig;
   use_realtime_asr: boolean;
   enable_llm_post_process: boolean;
   llm_config: LlmConfig;
@@ -124,9 +138,34 @@ const DEFAULT_LLM_CONFIG: LlmConfig = {
   active_preset_id: "polishing"
 };
 
+// ASR 服务商元数据
+const ASR_PROVIDERS: Record<AsrProvider, { name: string; model: string; docsUrl: string }> = {
+  qwen: {
+    name: '阿里千问',
+    model: 'qwen3-asr-flash',
+    docsUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/quick-start',
+  },
+  doubao: {
+    name: '豆包',
+    model: 'Doubao-Seed-ASR-2.0',
+    docsUrl: 'https://www.volcengine.com/docs/6561',
+  },
+  siliconflow: {
+    name: '硅基移动',
+    model: 'SenseVoiceSmall',
+    docsUrl: 'https://cloud.siliconflow.cn/',
+  },
+};
+
 function App() {
   const [apiKey, setApiKey] = useState("");
   const [fallbackApiKey, setFallbackApiKey] = useState("");
+  const [asrConfig, setAsrConfig] = useState<AsrConfig>({
+    primary: { provider: 'qwen', api_key: '' },
+    fallback: null,
+    enable_fallback: false,
+  });
+  const [showAsrModal, setShowAsrModal] = useState(false);
   const [useRealtime, setUseRealtime] = useState(true);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
@@ -191,16 +230,17 @@ function App() {
       const config = await invoke<AppConfig>("load_config");
       setApiKey(config.dashscope_api_key);
       setFallbackApiKey(config.siliconflow_api_key || "");
+
+      // 加载 ASR 配置
+      if (config.asr_config) {
+        setAsrConfig(config.asr_config);
+      }
+
       setUseRealtime(config.use_realtime_asr ?? true);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
-      
-      // 修改这里：
-      // 只要 config.llm_config 存在，我们就直接用。
-      // 不再判断 presets.length === 0 就强行填充 DEFAULT_PRESETS。
-      // 这样如果你在 UI 上删光了预设，下次进来就是空的，你可以从头开始加。
+
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
-      
-      // 只有当 active_preset_id 无效时（比如对应的预设被删了），才重置选中状态
+
       if (loadedLlmConfig.presets && loadedLlmConfig.presets.length > 0) {
           const activeExists = loadedLlmConfig.presets.find(p => p.id === loadedLlmConfig.active_preset_id);
           if (!activeExists) {
@@ -323,7 +363,7 @@ function App() {
 
   const handleSaveConfig = async () => {
     try {
-      await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig });
+      await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
       setError(null);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
@@ -335,12 +375,12 @@ function App() {
   const handleStartStop = async () => {
     try {
       if (status === "idle") {
-        if (!apiKey) {
-          setError("请先输入 DashScope API Key");
+        if (!apiKey && !asrConfig.primary.api_key) {
+          setError("请先配置 ASR API Key");
           return;
         }
-        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig });
-        await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig });
+        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
+        await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
         setStatus("running");
         setError(null);
       } else {
@@ -369,6 +409,7 @@ function App() {
           useRealtime,
           enablePostProcess,
           llmConfig,
+          asrConfig,
           closeAction: action,
         });
       } catch (err) {
@@ -592,53 +633,43 @@ function App() {
           <div className="space-y-5">
             <div className="flex items-center gap-2 text-slate-900 font-semibold">
               <Settings size={18} />
-              <h2>API 配置</h2>
+              <h2>配置</h2>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-600 ml-1">DashScope (千问)</label>
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-blue-500 transition-colors">
-                    <Key size={16} />
-                  </div>
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    disabled={isRunning}
-                    className="w-full pl-10 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:border-slate-300"
-                    placeholder="sk-..."
-                  />
-                  <button 
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors"
-                  >
-                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-sm font-medium text-slate-600 ml-1">SiliconFlow (备用)</label>
-                  <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">可选</span>
+            {/* ASR 配置摘要卡片 */}
+            <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
+              <div className="flex items-center gap-3 flex-1">
+                <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                  <Mic size={18} />
                 </div>
-                <div className="relative group">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-indigo-500 transition-colors">
-                    <Cpu size={16} />
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-slate-700 mb-1">ASR 语音识别</div>
+                  <div className="text-xs text-slate-500 space-y-0.5">
+                    <div>主模型：{ASR_PROVIDERS[asrConfig.primary.provider].name} · {ASR_PROVIDERS[asrConfig.primary.provider].model}</div>
+                    <div>
+                      备用：{asrConfig.fallback && asrConfig.enable_fallback
+                        ? `${ASR_PROVIDERS[asrConfig.fallback.provider].name} · ${ASR_PROVIDERS[asrConfig.fallback.provider].model}`
+                        : '未配置'}
+                    </div>
                   </div>
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    value={fallbackApiKey}
-                    onChange={(e) => setFallbackApiKey(e.target.value)}
-                    disabled={isRunning}
-                    className="w-full pl-10 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:border-slate-300"
-                    placeholder="sk-..."
-                  />
                 </div>
               </div>
+              <button
+                onClick={() => setShowAsrModal(true)}
+                disabled={isRunning}
+                className="p-2 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="配置 ASR"
+              >
+                <Settings size={16} />
+              </button>
             </div>
+
+            {!asrConfig.primary.api_key && (
+              <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-100 rounded-xl text-amber-600 text-xs animate-in slide-in-from-top-2 fade-in duration-300">
+                <AlertCircle size={14} />
+                <span>请点击设置按钮配置 ASR API Key</span>
+              </div>
+            )}
 
             {/* Mode Switches */}
             <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
@@ -766,6 +797,212 @@ function App() {
           </button>
         </div>
       </div>
+
+      {/* ASR Configuration Modal */}
+      {showAsrModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
+
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-100 rounded-xl text-blue-600">
+                  <Mic size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">ASR 语音识别配置</h3>
+                  <p className="text-xs text-slate-500">配置主模型和备用模型</p>
+                </div>
+              </div>
+              <button onClick={() => setShowAsrModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6">
+
+              {/* 主模型配置 */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-bold text-slate-700">主模型</h4>
+
+                <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-slate-600">服务商</label>
+                    <select
+                      value={asrConfig.primary.provider}
+                      onChange={(e) => setAsrConfig(prev => ({
+                        ...prev,
+                        primary: { ...prev.primary, provider: e.target.value as AsrProvider }
+                      }))}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                    >
+                      <option value="qwen">{ASR_PROVIDERS.qwen.name}</option>
+                      <option value="doubao">{ASR_PROVIDERS.doubao.name}</option>
+                    </select>
+                  </div>
+
+                  {asrConfig.primary.provider === 'qwen' ? (
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-slate-600">API Key</label>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? "text" : "password"}
+                          value={asrConfig.primary.api_key}
+                          onChange={(e) => setAsrConfig(prev => ({
+                            ...prev,
+                            primary: { ...prev.primary, api_key: e.target.value }
+                          }))}
+                          className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                          placeholder="sk-..."
+                        />
+                        <button
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                        >
+                          {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-600">APP ID</label>
+                        <input
+                          type="text"
+                          value={asrConfig.primary.app_id || ''}
+                          onChange={(e) => setAsrConfig(prev => ({
+                            ...prev,
+                            primary: { ...prev.primary, app_id: e.target.value }
+                          }))}
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                          placeholder="输入豆包 APP ID"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-600">Access Token</label>
+                        <div className="relative">
+                          <input
+                            type={showApiKey ? "text" : "password"}
+                            value={asrConfig.primary.access_token || ''}
+                            onChange={(e) => setAsrConfig(prev => ({
+                              ...prev,
+                              primary: { ...prev.primary, access_token: e.target.value }
+                            }))}
+                            className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                            placeholder="输入 Access Token"
+                          />
+                          <button
+                            onClick={() => setShowApiKey(!showApiKey)}
+                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                          >
+                            {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="text-xs text-slate-500">
+                    模型：{ASR_PROVIDERS[asrConfig.primary.provider].model}
+                  </div>
+                </div>
+              </div>
+
+              {/* 备用模型配置 */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-slate-700">备用模型（可选）</h4>
+                  <button
+                    onClick={() => setAsrConfig(prev => ({ ...prev, enable_fallback: !prev.enable_fallback }))}
+                    className={`relative w-11 h-6 rounded-full transition-all duration-300 ${
+                      asrConfig.enable_fallback ? 'bg-blue-500' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-all duration-300 ${
+                      asrConfig.enable_fallback ? 'left-5' : 'left-0.5'
+                    }`} />
+                  </button>
+                </div>
+
+                {asrConfig.enable_fallback && (
+                  <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200 animate-in slide-in-from-top-2 fade-in duration-300">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-slate-600">服务商</label>
+                      <select
+                        value={asrConfig.fallback?.provider || 'siliconflow'}
+                        onChange={(e) => setAsrConfig(prev => ({
+                          ...prev,
+                          fallback: {
+                            provider: e.target.value as AsrProvider,
+                            api_key: prev.fallback?.api_key || ''
+                          }
+                        }))}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      >
+                        <option value="siliconflow">{ASR_PROVIDERS.siliconflow.name}</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-slate-600">API Key</label>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? "text" : "password"}
+                          value={asrConfig.fallback?.api_key || ''}
+                          onChange={(e) => setAsrConfig(prev => ({
+                            ...prev,
+                            fallback: {
+                              provider: prev.fallback?.provider || 'siliconflow',
+                              api_key: e.target.value
+                            }
+                          }))}
+                          className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                          placeholder="sk-..."
+                        />
+                        <button
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                        >
+                          {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-slate-500">
+                      模型：{ASR_PROVIDERS[asrConfig.fallback?.provider || 'siliconflow'].model}
+                    </div>
+
+                    <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
+                      <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                      <span>备用模型在主模型响应较慢时并行请求，先返回结果的模型优先使用</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowAsrModal(false)}
+                className="px-5 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                关闭
+              </button>
+              <button
+                onClick={() => {
+                  handleSaveConfig();
+                  setShowAsrModal(false);
+                }}
+                className="px-5 py-2.5 text-sm font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20 transition-all"
+              >
+                保存并应用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Enhanced LLM Configuration Modal */}
       {showLlmModal && (

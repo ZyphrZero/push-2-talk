@@ -1,0 +1,85 @@
+use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose};
+use crate::asr::utils;
+
+const DOUBAO_API_URL: &str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
+const RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
+
+#[derive(Clone)]
+pub struct DoubaoASRClient {
+    app_id: String,
+    access_key: String,
+    client: reqwest::Client,
+}
+
+impl DoubaoASRClient {
+    pub fn new(app_id: String, access_key: String) -> Self {
+        Self {
+            app_id,
+            access_key,
+            client: utils::create_http_client(),
+        }
+    }
+
+    pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
+        let audio_base64 = general_purpose::STANDARD.encode(audio_data);
+        tracing::info!("豆包 ASR: 音频数据大小 {} bytes", audio_data.len());
+
+        let request_body = serde_json::json!({
+            "user": {
+                "uid": &self.app_id
+            },
+            "audio": {
+                "data": audio_base64
+            },
+            "request": {
+                "model_name": "bigmodel"
+            }
+        });
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+
+        let response = self
+            .client
+            .post(DOUBAO_API_URL)
+            .header("X-Api-App-Key", &self.app_id)
+            .header("X-Api-Access-Key", &self.access_key)
+            .header("X-Api-Resource-Id", RESOURCE_ID)
+            .header("X-Api-Request-Id", &request_id)
+            .header("X-Api-Sequence", "-1")
+            .json(&request_body)
+            .send()
+            .await?;
+
+        // 检查响应头中的状态码
+        let status_code = response
+            .headers()
+            .get("X-Api-Status-Code")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let api_message = response
+            .headers()
+            .get("X-Api-Message")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        tracing::info!("豆包 ASR 响应: status_code={}, message={}", status_code, api_message);
+
+        if status_code != "20000000" {
+            anyhow::bail!("豆包 ASR 失败 ({}): {}", status_code, api_message);
+        }
+
+        let result: serde_json::Value = response.json().await?;
+        tracing::debug!("豆包 ASR 响应体: {}", serde_json::to_string_pretty(&result)?);
+
+        let mut text = result["result"]["text"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("无法解析豆包转录结果"))?
+            .to_string();
+
+        utils::strip_trailing_punctuation(&mut text);
+        tracing::info!("豆包 ASR 转录完成: {}", text);
+        Ok(text)
+    }
+}

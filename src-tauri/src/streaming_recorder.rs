@@ -264,12 +264,18 @@ impl StreamingRecorder {
 
         tracing::info!("停止流式录音...");
 
+        // 先等待音频回调完成当前数据写入（stream 还在运行）
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // 停止录音标志
         *self.is_recording.lock().unwrap() = false;
+
+        // 再等待一小段时间确保最后的数据被写入
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 最后 drop stream
         self.stream = None;
         self.chunk_sender = None;
-
-        // 等待数据写入完成
-        std::thread::sleep(std::time::Duration::from_millis(100));
 
         // 获取完整音频数据
         let raw_audio = self.full_audio_data.lock().unwrap().clone();
