@@ -25,7 +25,8 @@ import {
   History,
   Copy,
   Clock,
-  Minus
+  Minus,
+  Power
 } from "lucide-react";
 import { nanoid } from 'nanoid';
 
@@ -185,6 +186,7 @@ function App() {
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
+  const [enableAutostart, setEnableAutostart] = useState(false);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -249,6 +251,14 @@ function App() {
       }
 
       setLlmConfig(loadedLlmConfig);
+
+      // 加载开机自启动状态
+      try {
+        const autostart = await invoke<boolean>("get_autostart");
+        setEnableAutostart(autostart);
+      } catch (err) {
+        console.error("获取开机自启状态失败:", err);
+      }
 
       // 自动启动时也需要传递 asrConfig
       const loadedAsrConfig = config.asr_config || null;
@@ -368,6 +378,18 @@ function App() {
     try {
       await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
       setError(null);
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleAutostartToggle = async () => {
+    try {
+      const newValue = !enableAutostart;
+      await invoke<string>("set_autostart", { enabled: newValue });
+      setEnableAutostart(newValue);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
     } catch (err) {
@@ -502,6 +524,18 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* 开机自启动按钮 */}
+            <button
+              onClick={handleAutostartToggle}
+              className={`p-2 rounded-lg transition-all ${
+                enableAutostart
+                  ? 'bg-green-100 text-green-600 hover:bg-green-200'
+                  : 'bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-500'
+              }`}
+              title={enableAutostart ? "开机自启动：已启用" : "开机自启动：已禁用"}
+            >
+              <Power size={18} />
+            </button>
             <button
               onClick={() => setShowHistory(true)}
               className="p-2 rounded-lg bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 transition-all"

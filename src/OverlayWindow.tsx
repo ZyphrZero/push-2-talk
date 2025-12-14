@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 // 音频级别事件 payload 类型
 interface AudioLevelPayload {
@@ -157,6 +158,24 @@ export default function OverlayWindow() {
       listenersSetup.current = false;
     };
   }, []);
+
+  // 超时保护机制：如果转写状态超过 15 秒，强制调用隐藏
+  useEffect(() => {
+    if (status === "transcribing") {
+      const timeout = setTimeout(async () => {
+        console.warn("转写超时 15 秒，强制调用隐藏悬浮窗");
+        try {
+          await invoke("hide_overlay");
+          setStatus("recording");
+          smoothedLevelRef.current = 0;
+          setAudioLevel(0);
+        } catch (e) {
+          console.error("强制隐藏悬浮窗失败:", e);
+        }
+      }, 15000);
+      return () => clearTimeout(timeout);
+    }
+  }, [status]);
 
   return (
     <div className="overlay-root">

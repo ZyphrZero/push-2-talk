@@ -334,12 +334,12 @@ async fn start_app(
                                 match rec.start_streaming(Some(app.clone())) {
                                     Ok(rx) => Some(rx),
                                     Err(e) => {
-                                        tracing::error!("开始流式录音失败: {}", e);
-                                        let _ = app.emit("error", format!("录音失败: {}", e));
+                                        emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
                                         None
                                     }
                                 }
                             } else {
+                                emit_error_and_hide_overlay(&app, "流式录音器未初始化".to_string());
                                 None
                             }
                         };
@@ -390,6 +390,8 @@ async fn start_app(
                                 }
                             } else {
                                 tracing::error!("豆包凭证缺失：需要 app_id 和 access_token");
+                                // 凭证缺失，录音已启动但无法建立 WebSocket，备用方案会在 on_stop 时处理
+                                // 此处不需要隐藏悬浮窗，因为录音仍在进行
                             }
                         }
                     }
@@ -410,12 +412,12 @@ async fn start_app(
                                         match rec.start_streaming(Some(app.clone())) {
                                             Ok(rx) => Some(rx),
                                             Err(e) => {
-                                                tracing::error!("开始流式录音失败: {}", e);
-                                                let _ = app.emit("error", format!("录音失败: {}", e));
+                                                emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
                                                 None
                                             }
                                         }
                                     } else {
+                                        emit_error_and_hide_overlay(&app, "流式录音器未初始化".to_string());
                                         None
                                     }
                                 };
@@ -455,14 +457,17 @@ async fn start_app(
                             }
                             Err(e) => {
                                 tracing::error!("建立千问 WebSocket 连接失败: {}，回退到普通录音", e);
-                                let _ = app.emit("error", format!("实时连接失败: {}", e));
+                                // 注意：这里不发送 error 事件，因为会尝试备用方案
 
                                 // 回退到普通流式录音（录完再传）
                                 let mut streaming_guard = streaming_recorder.lock().unwrap();
                                 if let Some(ref mut rec) = *streaming_guard {
                                     if let Err(e) = rec.start_streaming(Some(app.clone())) {
-                                        tracing::error!("开始流式录音失败: {}", e);
+                                        // 备用方案也失败了，发送错误并隐藏悬浮窗
+                                        emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
                                     }
+                                } else {
+                                    emit_error_and_hide_overlay(&app, "录音器未初始化".to_string());
                                 }
                             }
                         }
@@ -473,9 +478,10 @@ async fn start_app(
                 let mut recorder_guard = recorder.lock().unwrap();
                 if let Some(ref mut rec) = *recorder_guard {
                     if let Err(e) = rec.start_recording(Some(app.clone())) {
-                        tracing::error!("开始录音失败: {}", e);
-                        let _ = app.emit("error", format!("录音失败: {}", e));
+                        emit_error_and_hide_overlay(&app, format!("录音失败: {}", e));
                     }
+                } else {
+                    emit_error_and_hide_overlay(&app, "录音器未初始化".to_string());
                 }
             }
         });
@@ -566,8 +572,7 @@ async fn handle_http_transcription(
             match rec.stop_recording_to_memory() {
                 Ok(data) => Some(data),
                 Err(e) => {
-                    tracing::error!("停止录音失败: {}", e);
-                    let _ = app.emit("error", format!("停止录音失败: {}", e));
+                    emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
                     None
                 }
             }
@@ -702,7 +707,7 @@ async fn handle_realtime_stop(
                             )
                             .await;
                         } else {
-                            let _ = app.emit("error", format!("转录失败: {}", e));
+                            emit_error_and_hide_overlay(&app, format!("转录失败: {}", e));
                         }
                     }
                 }
@@ -723,7 +728,7 @@ async fn handle_realtime_stop(
                     )
                     .await;
                 } else {
-                    let _ = app.emit("error", "没有录制到音频数据".to_string());
+                    emit_error_and_hide_overlay(&app, "没有录制到音频数据".to_string());
                 }
             }
         }
@@ -782,7 +787,7 @@ async fn handle_realtime_stop(
                             )
                             .await;
                         } else {
-                            let _ = app.emit("error", format!("转录失败: {}", e));
+                            emit_error_and_hide_overlay(&app, format!("转录失败: {}", e));
                         }
                     }
                 }
@@ -803,7 +808,7 @@ async fn handle_realtime_stop(
                     )
                     .await;
                 } else {
-                    let _ = app.emit("error", "没有录制到音频数据".to_string());
+                    emit_error_and_hide_overlay(&app, "没有录制到音频数据".to_string());
                 }
             }
         }
@@ -863,8 +868,7 @@ async fn handle_realtime_transcription(
             match rec.stop_streaming() {
                 Ok(data) => Some(data),
                 Err(e) => {
-                    tracing::error!("停止流式录音失败: {}", e);
-                    let _ = app.emit("error", format!("停止录音失败: {}", e));
+                    emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
                     None
                 }
             }
@@ -953,6 +957,24 @@ fn extract_pcm_from_wav(wav_data: &[u8]) -> anyhow::Result<Vec<i16>> {
     Ok(samples)
 }
 
+/// 统一的错误处理辅助函数 - 发送错误事件并隐藏悬浮窗
+fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
+    tracing::error!("发送错误并隐藏悬浮窗: {}", error_msg);
+    let _ = app.emit("error", error_msg);
+
+    // 隐藏悬浮窗，带重试机制
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        if let Err(e) = overlay.hide() {
+            tracing::error!("隐藏悬浮窗失败: {}", e);
+            // 延迟 50ms 重试一次
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if let Err(e) = overlay.hide() {
+                tracing::error!("隐藏悬浮窗重试仍然失败: {}", e);
+            }
+        }
+    }
+}
+
 /// 转录完成事件的 payload
 #[derive(Clone, serde::Serialize)]
 struct TranscriptionResult {
@@ -1001,13 +1023,15 @@ async fn handle_transcription_result(
             let total_time_ms = asr_time_ms + llm_time_ms.unwrap_or(0);
 
             // 插入文本
-            let mut inserter_guard = inserter.lock().unwrap();
-            if let Some(ref mut ins) = *inserter_guard {
-                if let Err(e) = ins.insert_text(&final_text) {
-                    tracing::error!("插入文本失败: {}", e);
-                    let _ = app.emit("error", format!("插入文本失败: {}", e));
+            {
+                let mut inserter_guard = inserter.lock().unwrap();
+                if let Some(ref mut ins) = *inserter_guard {
+                    if let Err(e) = ins.insert_text(&final_text) {
+                        tracing::error!("插入文本失败: {}", e);
+                        let _ = app.emit("error", format!("插入文本失败: {}", e));
+                    }
                 }
-            }
+            } // 释放 inserter_guard
 
             let result = TranscriptionResult {
                 text: final_text,
@@ -1016,21 +1040,38 @@ async fn handle_transcription_result(
                 llm_time_ms,
                 total_time_ms,
             };
-            let _ = app.emit("transcription_complete", result);
 
-            // 隐藏录音悬浮窗
+            // 先隐藏录音悬浮窗
             if let Some(overlay) = app.get_webview_window("overlay") {
-                let _ = overlay.hide();
+                if let Err(e) = overlay.hide() {
+                    tracing::error!("隐藏悬浮窗失败: {}", e);
+                    // 延迟 50ms 重试一次
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    if let Err(e) = overlay.hide() {
+                        tracing::error!("隐藏悬浮窗重试仍然失败: {}", e);
+                    }
+                }
             }
+
+            // 后发送完成事件
+            let _ = app.emit("transcription_complete", result);
         }
         Err(e) => {
+            // 先隐藏录音悬浮窗
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                if let Err(e) = overlay.hide() {
+                    tracing::error!("隐藏悬浮窗失败: {}", e);
+                    // 延迟 50ms 重试一次
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    if let Err(e) = overlay.hide() {
+                        tracing::error!("隐藏悬浮窗重试仍然失败: {}", e);
+                    }
+                }
+            }
+
+            // 后发送错误事件
             tracing::error!("转录失败: {}", e);
             let _ = app.emit("error", format!("转录失败: {}", e));
-
-            // 隐藏录音悬浮窗
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                let _ = overlay.hide();
-            }
         }
     }
 }
@@ -1128,9 +1169,15 @@ async fn cancel_transcription(app_handle: AppHandle) -> Result<String, String> {
         *session_guard = None;
     }
 
-    // 5. 隐藏录音悬浮窗
+    // 5. 隐藏录音悬浮窗（带重试机制）
     if let Some(overlay) = app_handle.get_webview_window("overlay") {
-        let _ = overlay.hide();
+        if let Err(e) = overlay.hide() {
+            tracing::error!("取消转录时隐藏悬浮窗失败，准备重试: {}", e);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if let Err(e) = overlay.hide() {
+                tracing::error!("取消转录时隐藏悬浮窗重试仍然失败: {}", e);
+            }
+        }
     }
 
     // 6. 发送取消事件
@@ -1149,13 +1196,42 @@ async fn show_overlay(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 隐藏录音悬浮窗
+/// 隐藏录音悬浮窗（带重试机制）
 #[tauri::command]
 async fn hide_overlay(app_handle: AppHandle) -> Result<(), String> {
     if let Some(overlay) = app_handle.get_webview_window("overlay") {
-        overlay.hide().map_err(|e| e.to_string())?;
+        // 第一次尝试
+        if let Err(e) = overlay.hide() {
+            tracing::error!("隐藏悬浮窗失败，准备重试: {}", e);
+            // 延迟 50ms 重试
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            overlay.hide().map_err(|e| {
+                tracing::error!("隐藏悬浮窗重试仍然失败: {}", e);
+                e.to_string()
+            })?;
+        }
     }
     Ok(())
+}
+
+/// 设置开机自启动
+#[tauri::command]
+async fn set_autostart(app: AppHandle, enabled: bool) -> Result<String, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())?;
+    } else {
+        manager.disable().map_err(|e| e.to_string())?;
+    }
+    Ok(if enabled { "已启用开机自启" } else { "已禁用开机自启" }.to_string())
+}
+
+/// 获取开机自启动状态
+#[tauri::command]
+async fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1163,8 +1239,24 @@ pub fn run() {
     // 初始化日志
     tracing_subscriber::fmt::init();
 
+    // 检查是否静默启动（开机自启时）
+    let args: Vec<String> = std::env::args().collect();
+    let start_minimized = args.contains(&"--minimized".to_string());
+
     tauri::Builder::default()
-        .setup(|app| {
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
+        .setup(move |app| {
+            // 如果是静默启动，隐藏主窗口
+            if start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                    tracing::info!("静默启动模式：主窗口已隐藏");
+                }
+            }
+
             // 初始化应用状态
             let app_state = AppState {
                 audio_recorder: Arc::new(Mutex::new(None)),
@@ -1236,6 +1328,8 @@ pub fn run() {
             quit_app,
             show_overlay,
             hide_overlay,
+            set_autostart,
+            get_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
