@@ -43,7 +43,11 @@ PushToTalk 是一个高性能的桌面语音输入工具。它不仅仅是一个
 [获取 API Key](https://bailian.console.aliyun.com/?tab=model#/api-key)
 - 输入硅基流动  API Key (可选)。（免费）
 [获取 API Key](https://cloud.siliconflow.cn/me/account/ak)
-3. **LLM 配置** (可选): 开启 "LLM 智能润色"，输入对应的 API Key (支持  OpenAI 兼容接口)。（推荐使用免费的智谱glm-4-flash-250414）
+- 输入豆包APP ID和Acess Token 
+[录音文件识别大模型-极速版开通](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/recordingRecognition) 备注：App ID和Access Token在网页下方
+[流式语音识别大模型-小时版开通](https://console.volcengine.com/ark/region:ark+cn-beijing/tts/speechRecognition) 备注：App ID和Access Token在网页下方
+3. **LLM 配置** (可选): 开启 "LLM 智能润色"，输入对应的 API Key (支持  OpenAI 兼容接口)。（推荐使用免费的智谱c-250414） 
+[获取 API Key](https://docs.bigmodel.cn/cn/guide/models/free/glm-4-flash-250414)
 4. 点击 "保存配置" 并 "启动助手"。
 
 ### 使用

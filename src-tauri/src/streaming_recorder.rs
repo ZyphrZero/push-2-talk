@@ -5,6 +5,9 @@ use anyhow::Result;
 use cpal::Stream;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::{Arc, Mutex};
+use tauri::AppHandle;
+
+use crate::audio_utils::{calculate_audio_level, emit_audio_level};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -91,7 +94,8 @@ impl StreamingRecorder {
     }
 
     /// 启动流式录音，返回音频块接收通道
-    pub fn start_streaming(&mut self) -> Result<Receiver<Vec<i16>>> {
+    /// app_handle 用于发送音频级别事件到前端
+    pub fn start_streaming(&mut self, app_handle: Option<AppHandle>) -> Result<Receiver<Vec<i16>>> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         tracing::info!("开始流式录音...");
@@ -129,6 +133,13 @@ impl StreamingRecorder {
         let pending_samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let pending_samples_clone = Arc::clone(&pending_samples);
 
+        // 音频级别发送计数器（用于控制发送频率）
+        let level_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let level_counter_clone = Arc::clone(&level_counter);
+
+        // 克隆 app_handle 用于闭包
+        let app_handle_f32 = app_handle.clone();
+
         let err_fn = |err| tracing::error!("录音流错误: {}", err);
 
         let stream = match supported_config.sample_format() {
@@ -145,6 +156,20 @@ impl StreamingRecorder {
                     // 处理数据：转单声道 + 降采样
                     let mono = Self::to_mono(data, channels);
                     let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
+
+                    // 计算并发送音频级别（每2个chunk发送一次，约10Hz）
+                    if let Some(ref app) = app_handle_f32 {
+                        let mut counter = level_counter_clone.lock().unwrap();
+                        *counter += 1;
+                        if *counter % 2 == 0 {
+                            let level = calculate_audio_level(&resampled);
+                            // 调试日志：每20次打印一次（约每2秒）
+                            if *counter % 40 == 0 {
+                                tracing::info!("[AudioLevel] 发送音频级别: {:.4}", level);
+                            }
+                            emit_audio_level(app, level);
+                        }
+                    }
 
                     // 累积样本
                     let mut pending = pending_samples_clone.lock().unwrap();
@@ -168,6 +193,8 @@ impl StreamingRecorder {
                 let full_audio_data_i16 = Arc::clone(&full_audio_data);
                 let pending_samples_i16 = Arc::clone(&pending_samples);
                 let chunk_tx_i16 = chunk_tx.clone();
+                let level_counter_i16 = Arc::clone(&level_counter);
+                let app_handle_i16 = app_handle.clone();
 
                 device.build_input_stream(
                     &config,
@@ -187,6 +214,16 @@ impl StreamingRecorder {
                         // 处理数据
                         let mono = Self::to_mono(&f32_data, channels);
                         let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
+
+                        // 计算并发送音频级别
+                        if let Some(ref app) = app_handle_i16 {
+                            let mut counter = level_counter_i16.lock().unwrap();
+                            *counter += 1;
+                            if *counter % 2 == 0 {
+                                let level = calculate_audio_level(&resampled);
+                                emit_audio_level(app, level);
+                            }
+                        }
 
                         // 累积样本
                         let mut pending = pending_samples_i16.lock().unwrap();
@@ -210,6 +247,8 @@ impl StreamingRecorder {
                 let full_audio_data_u16 = Arc::clone(&full_audio_data);
                 let pending_samples_u16 = Arc::clone(&pending_samples);
                 let chunk_tx_u16 = chunk_tx.clone();
+                let level_counter_u16 = Arc::clone(&level_counter);
+                let app_handle_u16 = app_handle;
 
                 device.build_input_stream(
                     &config,
@@ -229,6 +268,16 @@ impl StreamingRecorder {
                         // 处理数据
                         let mono = Self::to_mono(&f32_data, channels);
                         let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
+
+                        // 计算并发送音频级别
+                        if let Some(ref app) = app_handle_u16 {
+                            let mut counter = level_counter_u16.lock().unwrap();
+                            *counter += 1;
+                            if *counter % 2 == 0 {
+                                let level = calculate_audio_level(&resampled);
+                                emit_audio_level(app, level);
+                            }
+                        }
 
                         // 累积样本
                         let mut pending = pending_samples_u16.lock().unwrap();
@@ -315,6 +364,7 @@ impl StreamingRecorder {
     }
 
     /// 检查是否正在录音
+    #[allow(dead_code)]
     pub fn is_recording(&self) -> bool {
         *self.is_recording.lock().unwrap()
     }

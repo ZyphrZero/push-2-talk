@@ -250,18 +250,21 @@ function App() {
 
       setLlmConfig(loadedLlmConfig);
 
+      // 自动启动时也需要传递 asrConfig
+      const loadedAsrConfig = config.asr_config || null;
+
       if (config.dashscope_api_key && config.dashscope_api_key.trim() !== "") {
-        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, loadedLlmConfig);
+        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, loadedLlmConfig, loadedAsrConfig);
       }
     } catch (err) {
       console.error("加载配置失败:", err);
     }
   };
 
-  const autoStartApp = async (apiKey: string, fallbackApiKey: string, useRealtimeMode: boolean, enablePostProcessMode: boolean, llmCfg: LlmConfig) => {
+  const autoStartApp = async (apiKey: string, fallbackApiKey: string, useRealtimeMode: boolean, enablePostProcessMode: boolean, llmCfg: LlmConfig, asrCfg: AsrConfig | null) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 100));
-      await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime: useRealtimeMode, enablePostProcess: enablePostProcessMode, llmConfig: llmCfg });
+      await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime: useRealtimeMode, enablePostProcess: enablePostProcessMode, llmConfig: llmCfg, asrConfig: asrCfg });
       setStatus("running");
       setError(null);
     } catch (err) {

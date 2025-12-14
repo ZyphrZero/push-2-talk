@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::io::Cursor;
 use anyhow::Result;
 use cpal::Stream;
+use tauri::AppHandle;
+
+use crate::audio_utils::{calculate_audio_level, emit_audio_level};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -73,7 +76,7 @@ impl AudioRecorder {
         output
     }
 
-    pub fn start_recording(&mut self) -> Result<()> {
+    pub fn start_recording(&mut self, app_handle: Option<AppHandle>) -> Result<()> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
         tracing::info!("开始录音...");
@@ -108,31 +111,57 @@ impl AudioRecorder {
         let is_recording = Arc::clone(&self.is_recording);
         let err_fn = |err| tracing::error!("录音流错误: {}", err);
 
+        // 音频级别发送计数器
+        let level_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+
         // 根据采样格式创建不同的 stream
         let stream = match supported_config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if *is_recording.lock().unwrap() {
-                        let mut buffer = audio_data.lock().unwrap();
-                        buffer.extend_from_slice(data);
-                    }
-                },
-                err_fn,
-                None,
-            )?,
+            cpal::SampleFormat::F32 => {
+                let app_handle_f32 = app_handle.clone();
+                let level_counter_f32 = Arc::clone(&level_counter);
+                device.build_input_stream(
+                    &config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if *is_recording.lock().unwrap() {
+                            let mut buffer = audio_data.lock().unwrap();
+                            buffer.extend_from_slice(data);
+
+                            // 计算并发送音频级别
+                            if let Some(ref app) = app_handle_f32 {
+                                let mut counter = level_counter_f32.lock().unwrap();
+                                *counter += 1;
+                                // 每次回调都发送（约 10-20ms 一次，提高流畅度）
+                                let level = calculate_audio_level(data);
+                                if *counter % 30 == 0 {
+                                    tracing::info!("[AudioLevel] 发送音频级别: {:.4}", level);
+                                }
+                                emit_audio_level(app, level);
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )?
+            },
             cpal::SampleFormat::I16 => {
                 let audio_data_i16 = Arc::clone(&audio_data);
                 let is_recording_i16 = Arc::clone(&is_recording);
+                let app_handle_i16 = app_handle.clone();
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         if *is_recording_i16.lock().unwrap() {
                             let mut buffer = audio_data_i16.lock().unwrap();
                             // 转换 i16 到 f32
-                            for &sample in data.iter() {
-                                let normalized = sample as f32 / i16::MAX as f32;
-                                buffer.push(normalized);
+                            let f32_data: Vec<f32> = data.iter()
+                                .map(|&s| s as f32 / i16::MAX as f32)
+                                .collect();
+                            buffer.extend(&f32_data);
+
+                            // 计算并发送音频级别
+                            if let Some(ref app) = app_handle_i16 {
+                                let level = calculate_audio_level(&f32_data);
+                                emit_audio_level(app, level);
                             }
                         }
                     },
@@ -143,15 +172,22 @@ impl AudioRecorder {
             cpal::SampleFormat::U16 => {
                 let audio_data_u16 = Arc::clone(&audio_data);
                 let is_recording_u16 = Arc::clone(&is_recording);
+                let app_handle_u16 = app_handle;
                 device.build_input_stream(
                     &config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         if *is_recording_u16.lock().unwrap() {
                             let mut buffer = audio_data_u16.lock().unwrap();
                             // 转换 u16 到 f32
-                            for &sample in data.iter() {
-                                let normalized = (sample as f32 - 32768.0) / 32768.0;
-                                buffer.push(normalized);
+                            let f32_data: Vec<f32> = data.iter()
+                                .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                                .collect();
+                            buffer.extend(&f32_data);
+
+                            // 计算并发送音频级别
+                            if let Some(ref app) = app_handle_u16 {
+                                let level = calculate_audio_level(&f32_data);
+                                emit_audio_level(app, level);
                             }
                         }
                     },
@@ -220,6 +256,7 @@ impl AudioRecorder {
     }
 
     /// 停止录音并保存到文件（保留兼容性）
+    #[allow(dead_code)]
     pub fn stop_recording(&mut self) -> Result<PathBuf> {
         tracing::info!("停止录音...");
 

@@ -20,6 +20,21 @@
         "decorations": true,
         "alwaysOnTop": false,
         "label": "main"
+      },
+      {
+        "title": "Recording Overlay",
+        "label": "overlay",
+        "url": "overlay.html",
+        "width": 180,
+        "height": 80,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

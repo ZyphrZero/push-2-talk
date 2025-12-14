@@ -27,3 +27,125 @@ code {
   background-color: rgba(156, 163, 175, 0.5);
   border-radius: 20px;
 }
+
+/* ==================== 悬浮窗专用样式 ==================== */
+
+/* 悬浮窗根容器 - 透明背景 */
+#overlay-root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+}
+
+/* 禁用文本选择 */
+#overlay-root * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 根容器 */
+.overlay-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+/* 胶囊形状容器 - iOS风格 */
+.overlay-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.95);
+  border-radius: 22px;
+  width: 100px;
+  height: 44px;
+  box-sizing: border-box;
+  /* 精致的阴影效果 */
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* ========== 声波条样式 ========== */
+
+.wave-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 24px;
+}
+
+.wave-bar {
+  width: 3px;
+  min-height: 4px;
+  border-radius: 2px;
+  background: white;
+  transition: height 50ms ease-out;
+  will-change: height;
+}
+
+/* ========== 加载状态样式 ========== */
+
+.loading-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* 点阵容器 */
+.dots-container {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 单个点 */
+.dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 旋转太阳图标 */
+.spinner-icon {
+  width: 18px;
+  height: 18px;
+  color: white;
+  animation: spin 1.5s linear infinite;
+}
+
+.spinner-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
