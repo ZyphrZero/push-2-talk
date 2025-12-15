@@ -187,6 +187,7 @@ function App() {
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
+  const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -251,6 +252,11 @@ function App() {
       }
 
       setLlmConfig(loadedLlmConfig);
+
+      // 加载关闭行为配置
+      if (config.close_action) {
+        setCloseAction(config.close_action);
+      }
 
       // 加载开机自启动状态
       try {
@@ -404,7 +410,7 @@ function App() {
           setError("请先配置 ASR API Key");
           return;
         }
-        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
+        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig, closeAction });
         await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig });
         setStatus("running");
         setError(null);
@@ -427,6 +433,7 @@ function App() {
 
   const handleCloseAction = async (action: "close" | "minimize") => {
     if (rememberChoice) {
+      setCloseAction(action);
       try {
         await invoke("save_config", {
           apiKey,

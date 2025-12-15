@@ -11,7 +11,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http};
 
 const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
-const TRANSCRIPTION_TIMEOUT_SECS: u64 = 10;
+const TRANSCRIPTION_TIMEOUT_SECS: u64 = 6;
 
 /// 生成随机的 Sec-WebSocket-Key
 fn generate_websocket_key() -> String {
@@ -106,9 +106,16 @@ impl DoubaoRealtimeClient {
             match response {
                 Ok(Message::Binary(data)) => {
                     tracing::debug!("豆包 Full Client Request 响应: {} bytes", data.len());
-                    // 解析响应检查是否成功
-                    if let Err(e) = parse_response(&data) {
-                        tracing::debug!("豆包初始响应（预期无文本）: {}", e);
+                    // 解析响应检查是否成功（适配新的返回类型）
+                    match parse_response(&data) {
+                        Ok((text, _is_last)) => {
+                            if !text.is_empty() {
+                                tracing::debug!("豆包初始响应包含文本（意外）: {}", text);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("豆包初始响应（预期无文本）: {}", e);
+                        }
                     }
                 }
                 Ok(other) => {
@@ -158,15 +165,30 @@ impl DoubaoRealtimeClient {
         });
 
         tokio::spawn(async move {
+            let mut accumulated_text = String::new();
+            let mut result_sent = false;
+
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Binary(data)) => {
                         tracing::debug!("豆包 WebSocket 收到二进制消息: {} bytes", data.len());
                         match parse_response(&data) {
-                            Ok(text) => {
-                                tracing::info!("豆包流式转录结果: {}", text);
-                                let _ = result_tx.send(Ok(text)).await;
-                                break;
+                            Ok((text, is_final)) => {
+                                if !text.is_empty() {
+                                    accumulated_text = text;  // 更新为最新文本
+                                    tracing::debug!("豆包累积文本: {}", accumulated_text);
+                                }
+                                if is_final {
+                                    let final_text = if accumulated_text.is_empty() {
+                                        String::new()
+                                    } else {
+                                        accumulated_text.clone()
+                                    };
+                                    tracing::info!("豆包流式转录结果（最终包）: {}", final_text);
+                                    let _ = result_tx.send(Ok(final_text)).await;
+                                    result_sent = true;
+                                    break;
+                                }
                             }
                             Err(e) => {
                                 // 中间响应可能没有最终结果，继续等待
@@ -176,7 +198,16 @@ impl DoubaoRealtimeClient {
                     }
                     Ok(Message::Close(frame)) => {
                         tracing::warn!("豆包 WebSocket 连接关闭: {:?}", frame);
-                        let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 连接被关闭"))).await;
+                        // 连接关闭时返回已累积的文本
+                        if !accumulated_text.is_empty() {
+                            tracing::info!("豆包连接关闭，返回累积文本: {}", accumulated_text);
+                            let _ = result_tx.send(Ok(accumulated_text.clone())).await;
+                            result_sent = true;
+                        } else {
+                            tracing::warn!("豆包连接关闭，无转录结果");
+                            let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 连接被关闭"))).await;
+                            result_sent = true;
+                        }
                         break;
                     }
                     Ok(other) => {
@@ -185,8 +216,20 @@ impl DoubaoRealtimeClient {
                     Err(e) => {
                         tracing::error!("豆包 WebSocket 接收错误: {}", e);
                         let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 错误: {}", e))).await;
+                        result_sent = true;
                         break;
                     }
+                }
+            }
+
+            // 关键修复：循环正常退出时（read.next() 返回 None），确保发送结果
+            if !result_sent {
+                if !accumulated_text.is_empty() {
+                    tracing::info!("豆包连接结束，返回累积文本: {}", accumulated_text);
+                    let _ = result_tx.send(Ok(accumulated_text)).await;
+                } else {
+                    tracing::warn!("豆包连接结束，无转录结果");
+                    let _ = result_tx.send(Err(anyhow::anyhow!("WebSocket 连接结束，无转录结果"))).await;
                 }
             }
             tracing::debug!("豆包 WebSocket 接收任务结束");
@@ -227,7 +270,7 @@ fn build_message(
     Ok(msg)
 }
 
-fn parse_response(data: &[u8]) -> Result<String> {
+fn parse_response(data: &[u8]) -> Result<(String, bool)> {
     if data.len() < 4 {
         return Err(anyhow::anyhow!("响应太短: {} bytes", data.len()));
     }
@@ -314,22 +357,16 @@ fn parse_response(data: &[u8]) -> Result<String> {
 
     let result: serde_json::Value = serde_json::from_str(&json_str)?;
 
-    // 尝试提取文本结果
-    if let Some(text) = result["result"]["text"].as_str() {
-        if !text.is_empty() {
-            return Ok(text.to_string());
-        }
-    }
-
     // 检查是否是最后一包的标志 (flags 0x02 或 0x03 表示最后一包)
     let is_last = message_flags & 0x02 != 0;
-    if is_last {
-        // 最后一包但没有文本，可能是空音频
-        if let Some(text) = result["result"]["text"].as_str() {
-            return Ok(text.to_string());
-        }
-        return Err(anyhow::anyhow!("最后一包但无转录结果"));
+
+    // 提取文本结果（可能为空）
+    let text = result["result"]["text"].as_str().unwrap_or("").to_string();
+
+    // 如果是最后一包或者有文本内容，返回结果
+    if is_last || !text.is_empty() {
+        return Ok((text, is_last));
     }
 
-    Err(anyhow::anyhow!("中间响应，等待最终结果"))
+    Err(anyhow::anyhow!("中间响应，等待更多数据"))
 }
