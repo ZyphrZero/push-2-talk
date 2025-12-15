@@ -1,0 +1,9 @@
+{
+  "identifier": "updater",
+  "description": "Capability for the updater plugin",
+  "windows": ["main"],
+  "permissions": [
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

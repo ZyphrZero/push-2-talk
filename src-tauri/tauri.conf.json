@@ -1,6 +1,6 @@
 {
   "productName": "PushToTalk",
-  "version": "0.1.0",
+  "version": "0.0.6",
   "identifier": "com.pushtotalk.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "PushToTalk - MVP",
+        "title": "PushToTalk",
         "width": 800,
         "height": 900,
         "resizable": true,
@@ -39,7 +39,7 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": ["default", "updater"]
     }
   },
   "bundle": {
@@ -56,6 +56,23 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDREMEM2RUYzRDlFNEE3QkQKUldTOXArVFo4MjRNVFRjK2hnbi84U2dkRGg1WjRpeXdzK1pCRkM1RUdoWHNGQjNsN0hlRTZVS3IK",
+      "endpoints": [
+        "https://gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
+        "https://hk.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
+        "https://cdn.jsdelivr.net/gh/yyyzl/push-2-talk@latest/latest.json",
+        "https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
+        "https://cdn.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json",
+        "https://edgeone.gh-proxy.org/https://github.com/yyyzl/push-2-talk/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Mic,
   StopCircle,
@@ -26,7 +28,9 @@ import {
   Copy,
   Clock,
   Minus,
-  Power
+  Power,
+  Download,
+  RefreshCw
 } from "lucide-react";
 import { nanoid } from 'nanoid';
 
@@ -188,6 +192,10 @@ function App() {
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
   const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready">("idle");
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; notes?: string } | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -403,6 +411,102 @@ function App() {
     }
   };
 
+  const handleCheckUpdate = async () => {
+    try {
+      setUpdateStatus("checking");
+      const update = await check();
+
+      if (update) {
+        setUpdateInfo({
+          version: update.version,
+          notes: update.body || undefined
+        });
+        setUpdateStatus("available");
+        setShowUpdateModal(true);
+      } else {
+        setUpdateStatus("idle");
+        // 当前已是最新版本，显示提示
+        setCopyToast("当前已是最新版本");
+        setTimeout(() => setCopyToast(null), 2000);
+      }
+    } catch (err) {
+      console.error("检查更新失败:", err);
+      setUpdateStatus("idle");
+
+      // 将技术错误转换为用户友好的中文提示
+      const errorStr = String(err).toLowerCase();
+      let errorMsg = "检查更新失败，请稍后重试";
+
+      if (errorStr.includes("timeout") || errorStr.includes("timed out")) {
+        errorMsg = "检查更新超时，请检查网络连接";
+      } else if (errorStr.includes("network") || errorStr.includes("fetch") || errorStr.includes("connect")) {
+        errorMsg = "网络连接失败，请检查网络设置";
+      } else if (errorStr.includes("404") || errorStr.includes("not found")) {
+        errorMsg = "未找到更新信息，可能尚未发布新版本";
+      } else if (errorStr.includes("certificate") || errorStr.includes("ssl") || errorStr.includes("tls")) {
+        errorMsg = "安全连接失败，请检查系统时间或网络环境";
+      } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
+        errorMsg = "更新签名验证失败，请从官方渠道下载";
+      }
+
+      setError(errorMsg);
+    }
+  };
+
+  const handleDownloadAndInstall = async () => {
+    try {
+      setUpdateStatus("downloading");
+      const update = await check();
+
+      if (update) {
+        let downloaded = 0;
+        let contentLength = 0;
+
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case 'Started':
+              contentLength = event.data.contentLength || 0;
+              break;
+            case 'Progress':
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                setDownloadProgress(Math.round((downloaded / contentLength) * 100));
+              }
+              break;
+            case 'Finished':
+              setDownloadProgress(100);
+              break;
+          }
+        });
+
+        setUpdateStatus("ready");
+        // 自动重启应用
+        await relaunch();
+      }
+    } catch (err) {
+      console.error("下载更新失败:", err);
+      setUpdateStatus("available");
+
+      // 将技术错误转换为用户友好的中文提示
+      const errorStr = String(err).toLowerCase();
+      let errorMsg = "下载更新失败，请稍后重试";
+
+      if (errorStr.includes("timeout") || errorStr.includes("timed out")) {
+        errorMsg = "下载超时，请检查网络连接后重试";
+      } else if (errorStr.includes("network") || errorStr.includes("fetch") || errorStr.includes("connect")) {
+        errorMsg = "网络连接中断，请检查网络后重试";
+      } else if (errorStr.includes("space") || errorStr.includes("disk")) {
+        errorMsg = "磁盘空间不足，请清理后重试";
+      } else if (errorStr.includes("permission") || errorStr.includes("access")) {
+        errorMsg = "没有写入权限，请以管理员身份运行";
+      } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
+        errorMsg = "安装包签名验证失败，请从官方渠道下载";
+      }
+
+      setError(errorMsg);
+    }
+  };
+
   const handleStartStop = async () => {
     try {
       if (status === "idle") {
@@ -531,6 +635,25 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* 检查更新按钮 */}
+            <button
+              onClick={handleCheckUpdate}
+              disabled={updateStatus === "checking" || updateStatus === "downloading"}
+              className={`p-2 rounded-lg transition-all ${
+                updateStatus === "available"
+                  ? 'bg-green-100 text-green-600 hover:bg-green-200'
+                  : updateStatus === "checking"
+                  ? 'bg-blue-100 text-blue-600 animate-pulse'
+                  : 'bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-500'
+              } disabled:opacity-50`}
+              title={updateStatus === "available" ? "有新版本可用" : "检查更新"}
+            >
+              {updateStatus === "checking" ? (
+                <RefreshCw size={18} className="animate-spin" />
+              ) : (
+                <Download size={18} />
+              )}
+            </button>
             {/* 开机自启动按钮 */}
             <button
               onClick={handleAutostartToggle}
@@ -1402,6 +1525,93 @@ function App() {
                 />
                 <span className="text-sm text-slate-600">记住我的选择，下次不再询问</span>
               </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update Modal */}
+      {showUpdateModal && updateInfo && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-green-50 to-emerald-50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-green-100 rounded-xl text-green-600">
+                    <Download size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">发现新版本</h3>
+                    <p className="text-xs text-slate-500">v{updateInfo.version}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowUpdateModal(false);
+                    setUpdateStatus("idle");
+                  }}
+                  disabled={updateStatus === "downloading"}
+                  className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-50"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4">
+              {updateInfo.notes && (
+                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                  <h4 className="text-sm font-medium text-slate-700 mb-2">更新内容</h4>
+                  <p className="text-sm text-slate-600 whitespace-pre-wrap">{updateInfo.notes}</p>
+                </div>
+              )}
+
+              {updateStatus === "downloading" && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm text-slate-600">
+                    <span>正在下载更新...</span>
+                    <span>{downloadProgress}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-green-500 transition-all duration-300"
+                      style={{ width: `${downloadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowUpdateModal(false);
+                    setUpdateStatus("idle");
+                  }}
+                  disabled={updateStatus === "downloading"}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  稍后更新
+                </button>
+                <button
+                  onClick={handleDownloadAndInstall}
+                  disabled={updateStatus === "downloading"}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-green-500 hover:bg-green-600 rounded-xl shadow-lg shadow-green-500/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {updateStatus === "downloading" ? (
+                    <>
+                      <RefreshCw size={16} className="animate-spin" />
+                      下载中...
+                    </>
+                  ) : (
+                    <>
+                      <Download size={16} />
+                      立即更新
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

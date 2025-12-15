@@ -1,29 +1,31 @@
-use rodio::{OutputStream, Sink, Source};
-use std::time::Duration;
+use rodio::{Decoder, OutputStream, Sink, Source};
+use std::io::Cursor;
 
-/// 播放一个短促的提示音（非阻塞）
-///
-/// frequency: 音调频率（Hz），建议 800-1200
-/// duration_ms: 持续时间（毫秒），建议 100-200
-pub fn play_beep(frequency: u32, duration_ms: u64) {
+// 在编译时嵌入音效文件
+const NOTIFICATION_SOUND: &[u8] = include_bytes!("../resources/notification.ogg");
+
+// 音量系数 (0.0 - 1.0)，调小这个值可以降低音量
+const VOLUME: f32 = 0.2;
+
+/// 播放提示音（非阻塞）
+pub fn play_notification() {
     // 在新线程中播放，避免阻塞主线程
-    std::thread::spawn(move || {
-        if let Err(e) = play_beep_blocking(frequency, duration_ms) {
+    std::thread::spawn(|| {
+        if let Err(e) = play_notification_blocking() {
             tracing::error!("播放提示音失败: {}", e);
         }
     });
 }
 
 /// 阻塞式播放提示音
-fn play_beep_blocking(frequency: u32, duration_ms: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn play_notification_blocking() -> Result<(), Box<dyn std::error::Error>> {
     // 获取音频输出流
     let (_stream, stream_handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&stream_handle)?;
 
-    // 生成正弦波音频源
-    let source = rodio::source::SineWave::new(frequency as f32)
-        .take_duration(Duration::from_millis(duration_ms))
-        .amplify(0.3); // 音量调整为 30% 避免太刺耳
+    // 从嵌入的字节数据创建解码器
+    let cursor = Cursor::new(NOTIFICATION_SOUND);
+    let source = Decoder::new(cursor)?.amplify(VOLUME); // 降低音量
 
     sink.append(source);
     sink.sleep_until_end(); // 等待播放完成
@@ -31,12 +33,12 @@ fn play_beep_blocking(frequency: u32, duration_ms: u64) -> Result<(), Box<dyn st
     Ok(())
 }
 
-/// 播放"开始录音"提示音（较高音调）
+/// 播放"开始录音"提示音
 pub fn play_start_beep() {
-    play_beep(1000, 100); // 1000 Hz, 100ms
+    play_notification();
 }
 
-/// 播放"停止录音"提示音（较低音调）
+/// 播放"停止录音"提示音
 pub fn play_stop_beep() {
-    play_beep(800, 150); // 800 Hz, 150ms
+    play_notification();
 }

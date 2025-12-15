@@ -4,38 +4,69 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.2.0)'
+        required: false
+
+permissions:
+  contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 'lts/*'
           cache: 'npm'
 
-      - name: Setup Rust
-        uses: dtolnay/rust-action@stable
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app
+      - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PushToTalk ${{ github.ref_name }}'
+          tagName: v__VERSION__
+          releaseName: 'PushToTalk v__VERSION__'
           releaseBody: |
-            语音输入助手 ${{ github.ref_name }} 发布
+            ## PushToTalk 语音输入助手
 
-            ## 安装
-            - Windows 用户下载 `.msi` 或 `.exe` 安装包
+            查看完整更新日志: https://github.com/${{ github.repository }}/commits/v__VERSION__
+
+            ## 下载安装
+            - **Windows**: 下载 `.msi` 或 `.exe` 安装包
             - 安装后需以管理员身份运行
+            - 应用内支持自动更新
+
+            ---
+            自动构建 by GitHub Actions
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}

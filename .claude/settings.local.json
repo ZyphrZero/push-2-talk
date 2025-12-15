@@ -21,7 +21,12 @@
       "Bash(cargo build:*)",
       "Bash(test:*)",
       "Bash(cargo run:*)",
-      "Bash(git remote add:*)"
+      "Bash(git remote add:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(npx @tauri-apps/cli signer:*)",
+      "Bash(## What''\\''''s Changed\n\n            查看完整更新日志\n\n            ## 下载安装\n            - **Windows**: 下载 .msi 或 .exe 安装包\n            - 应用内自动更新已启用\n\n            ---\n            自动构建 by GitHub Actions\n          releaseDraft: false\n          prerelease: false\n          includeUpdaterJson: true\n          args: `${{ matrix.args }}\n''@\"\")",
+      "WebFetch(domain:api.github.com)"
     ],
     "deny": [],
     "ask": []
