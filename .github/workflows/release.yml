@@ -43,7 +43,10 @@ jobs:
         run: npm ci
 
       - name: Build only (No Release)
-        # 这里只运行构建命令，不签名，不上传
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5UW5Nb3ZvRnFVL25mNmRRQ2FDZE9rRzlYaHhEWkxOQ0x2OERRL09aTm9BWUFBQkFBQUFBQUFBQUFBQUlBQUFBQUsydjdtdkdpVWQ4dTcxS1Z4K0F0Q3VCQXZ3K01BcnhvUThTLzZ1NGlQbkxpK1dUYVZUbndCTG5LaE9ZQ0JvY0FlYTk1aDB0TkxHc3FFVDBnOS8zL3dFWTRndHNUUzlVbG12LzVNSFpscG4yTkZhWk5ZbUxwMUdLNlE5NVFXR09qa09DcUd5ZVBMeHM9Cg==
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build
 
   # ========================================================
