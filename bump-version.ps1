@@ -24,6 +24,7 @@ Write-Host "正在更新版本号为 $Version ..." -ForegroundColor Cyan
 
 foreach ($file in $files) {
     if (Test-Path $file.Path) {
+        # 读取内容 (Get-Content 通常能自动处理读取时的 BOM 问题)
         $content = Get-Content $file.Path -Raw -Encoding UTF8
 
         if ($file.Path -like "*Cargo.toml") {
@@ -50,12 +51,16 @@ foreach ($file in $files) {
                 }
             }
 
-            $newLines | Set-Content $file.Path -Encoding UTF8
+            # --- 修改部分开始 ---
+            # 使用 .NET 类写入，明确禁止 BOM ([System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllLines($file.Path, $newLines, [System.Text.UTF8Encoding]::new($false))
+            # --- 修改部分结束 ---
         }
         else {
             # JSON 文件只替换第一个匹配
             $newContent = $content -replace $file.Pattern, $file.Replace
             # 确保只替换了一次（找到第一个后停止）
+            # 这里的逻辑本来就是正确的（无 BOM）
             [System.IO.File]::WriteAllText($file.Path, $newContent, [System.Text.UTF8Encoding]::new($false))
         }
 

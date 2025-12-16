@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "push-to-talk"
 version = "0.0.11"
 description = "A push-to-talk speech-to-text application"

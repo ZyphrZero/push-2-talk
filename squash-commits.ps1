@@ -8,7 +8,7 @@ if ($status) {
     git add .
 
     Write-Host "Creating temporary commit..." -ForegroundColor Cyan
-    git commit -m "temp commit for squash"
+    git commit -m "temp commit for squash/amend"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Commit failed." -ForegroundColor Red
@@ -22,12 +22,12 @@ if ($status) {
 Write-Host "`nRecent commits:" -ForegroundColor Green
 git log --oneline -10
 
-# Step 4: Ask how many commits to squash
+# Step 4: Ask how many commits to squash/amend
 Write-Host ""
-$count = Read-Host "How many commits do you want to squash?"
+$count = Read-Host "How many commits do you want to squash? (Enter 1 to amend the last commit's message)"
 
-if (-not ($count -match '^\d+$') -or [int]$count -lt 2) {
-    Write-Host "Invalid number. Must be at least 2." -ForegroundColor Red
+if (-not ($count -match '^\d+$') -or [int]$count -lt 1) {
+    Write-Host "Invalid number. Must be at least 1." -ForegroundColor Red
     exit 1
 }
 
@@ -40,20 +40,34 @@ if ([string]::IsNullOrWhiteSpace($message)) {
     exit 1
 }
 
-# Step 6: Perform the squash using soft reset
-Write-Host "`nSquashing $count commits..." -ForegroundColor Cyan
+# Step 6: Perform the action based on the count
+if ([int]$count -eq 1) {
+    Write-Host "`nAmending the last commit message..." -ForegroundColor Cyan
+    git commit --amend -m "$message"
 
-# Soft reset to keep changes staged
-git reset --soft HEAD~$count
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "`nLast commit message amended successfully!" -ForegroundColor Green
+        Write-Host "New commit:" -ForegroundColor Green
+        git log --oneline -1
+    } else {
+        Write-Host "Amending commit message failed." -ForegroundColor Red
+        exit 1
+    }
+} else { # $count is 2 or more, perform squash
+    Write-Host "`nSquashing $count commits..." -ForegroundColor Cyan
 
-# Create new commit with the provided message
-git commit -m "$message"
+    # Soft reset to keep changes staged
+    git reset --soft HEAD~$count
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "`nSquash completed successfully!" -ForegroundColor Green
-    Write-Host "New commit:" -ForegroundColor Green
-    git log --oneline -3
-} else {
-    Write-Host "Squash failed." -ForegroundColor Red
-    exit 1
+    # Create new commit with the provided message
+    git commit -m "$message"
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "`nSquash completed successfully!" -ForegroundColor Green
+        Write-Host "New commit:" -ForegroundColor Green
+        git log --oneline -3
+    } else {
+        Write-Host "Squash failed." -ForegroundColor Red
+        exit 1
+    }
 }
