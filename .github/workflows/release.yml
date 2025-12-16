@@ -1,20 +1,59 @@
-name: Release
+name: Release Pipeline
 
 on:
   push:
+    branches:
+      - main        # 监听 main 分支的普通提交（只测试构建）
     tags:
-      - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., 0.2.0)'
-        required: false
+      - 'v*'        # 监听打标签（执行发布）
+  workflow_dispatch: # 允许手动触发
 
 permissions:
   contents: write
 
 jobs:
+  # ========================================================
+  # Job 1: 构建测试 (Build Test)
+  # 场景: 只是 Push 代码到 main 分支，没有打 Tag
+  # 目的: 确保代码能编译通过，但不消耗版本号，不发布
+  # ========================================================
+  test-build:
+    # 如果不是 Tag，且不是手动触发，则运行测试
+    if: startsWith(github.ref, 'refs/tags/') != true
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build only (No Release)
+        # 这里只运行构建命令，不签名，不上传
+        run: npm run tauri build
+
+  # ========================================================
+  # Job 2: 正式发布 (Release)
+  # 场景: 推送了 v* 标签
+  # 目的: 生成更新日志、签名、打包、上传 Release
+  # ========================================================
   release:
+    # 只有当推送的是 Tag 时才运行
+    if: startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
       matrix:
@@ -128,7 +167,7 @@ jobs:
           releaseName: 'v__VERSION__'
           releaseBody: |
             ${{ steps.changelog.outputs.changelog }}
-            
+
             ## 下载安装
             - **Windows**: 下载 `.msi` 或 `.exe` 安装包
             - 安装后需以管理员身份运行
