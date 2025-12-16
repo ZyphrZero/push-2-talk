@@ -27,6 +27,78 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          # 获取当前 tag
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          echo "Current tag: $CURRENT_TAG"
+
+          # 获取上一个 tag
+          PREV_TAG=$(git describe --tags --abbrev=0 ${CURRENT_TAG}^ 2>/dev/null || echo "")
+          echo "Previous tag: $PREV_TAG"
+
+          # 获取 commit 列表
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s" -50)
+          else
+            COMMITS=$(git log ${PREV_TAG}..${CURRENT_TAG} --pretty=format:"%s")
+          fi
+
+          # 分类 commits
+          FEATURES=""
+          FIXES=""
+          UPDATES=""
+          OTHERS=""
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+
+            if echo "$line" | grep -qiE "^feat[：:]"; then
+              FEATURES="${FEATURES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(fix|bugfix|bug)[：:]"; then
+              FIXES="${FIXES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(update|improve|perf|优化)[：:]"; then
+              UPDATES="${UPDATES}- ${line#*[：:]}"$'\n'
+            elif echo "$line" | grep -qiE "^(chore|docs|refactor|style|test|security)[：:]"; then
+              OTHERS="${OTHERS}- ${line#*[：:]}"$'\n'
+            else
+              OTHERS="${OTHERS}- ${line}"$'\n'
+            fi
+          done <<< "$COMMITS"
+
+          # 构建 changelog
+          CHANGELOG=""
+
+          if [ -n "$FEATURES" ]; then
+            CHANGELOG="${CHANGELOG}## ✨ 新功能"$'\n'"${FEATURES}"$'\n'
+          fi
+
+          if [ -n "$FIXES" ]; then
+            CHANGELOG="${CHANGELOG}## 🐛 Bug 修复"$'\n'"${FIXES}"$'\n'
+          fi
+
+          if [ -n "$UPDATES" ]; then
+            CHANGELOG="${CHANGELOG}## 🚀 优化改进"$'\n'"${UPDATES}"$'\n'
+          fi
+
+          if [ -n "$OTHERS" ]; then
+            CHANGELOG="${CHANGELOG}## 📦 其他"$'\n'"${OTHERS}"$'\n'
+          fi
+
+          # 如果没有任何分类的 commits
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="本次更新无重大变更"$'\n'
+          fi
+
+          # 输出到 GitHub Actions
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -55,8 +127,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
           releaseBody: |
-            查看完整更新日志: https://github.com/${{ github.repository }}/commits/v__VERSION__
-
+            ${{ steps.changelog.outputs.changelog }}
+            
             ## 下载安装
             - **Windows**: 下载 `.msi` 或 `.exe` 安装包
             - 安装后需以管理员身份运行
