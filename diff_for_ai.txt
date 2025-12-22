@@ -1,0 +1,2525 @@
+﻿Below is a Git Diff representing code changes between two versions of a project.
+Please analyze these changes.
+
+Metadata for Context:
+- Old Version (Base):   Hash: 6ca9c48 | Message: 'feat:支持智能指令功能'
+- New Version (Target): Hash: 6d46f56 | Message: 'feat:单热键到双模式架构改造、'
+
+Format Description:
+- Lines starting with '-' were removed.
+- Lines starting with '+' were added.
+
+=== START OF GIT DIFF CONTENT ===
+diff --git a/src-tauri/src/assistant_processor.rs b/src-tauri/src/assistant_processor.rs
+new file mode 100644
+index 0000000..5d53c3e
+--- /dev/null
++++ b/src-tauri/src/assistant_processor.rs
+@@ -0,0 +1,126 @@
++// src-tauri/src/assistant_processor.rs
++//
++// AI 助手处理器
++//
++// 支持双系统提示词：问答模式和文本处理模式
++
++use anyhow::Result;
++
++use crate::config::AssistantConfig;
++use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
++
++/// AI 助手处理器
++///
++/// 根据是否有上下文（选中文本）使用不同的系统提示词
++#[derive(Clone)]
++pub struct AssistantProcessor {
++    client: OpenAiClient,
++    /// 问答模式系统提示词（无选中文本时使用）
++    qa_system_prompt: String,
++    /// 文本处理模式系统提示词（有选中文本时使用）
++    text_processing_system_prompt: String,
++}
++
++impl AssistantProcessor {
++    /// 创建新的 AI 助手处理器实例
++    pub fn new(config: AssistantConfig) -> Self {
++        let client_config = OpenAiClientConfig::new(
++            &config.endpoint,
++            &config.api_key,
++            &config.model,
++        );
++        let client = OpenAiClient::new(client_config);
++
++        Self {
++            client,
++            qa_system_prompt: config.qa_system_prompt,
++            text_processing_system_prompt: config.text_processing_system_prompt,
++        }
++    }
++
++    /// 处理用户指令（无上下文 - 问答模式）
++    ///
++    /// # Arguments
++    /// * `user_input` - 用户的语音转写文本（问题/指令）
++    ///
++    /// # Returns
++    /// * LLM 的回答
++    pub async fn process(&self, user_input: &str) -> Result<String> {
++        if user_input.trim().is_empty() {
++            return Ok(String::new());
++        }
++
++        tracing::info!("AssistantProcessor: 问答模式处理指令: {}", user_input);
++
++        self.client
++            .chat_simple(
++                &self.qa_system_prompt,
++                user_input,
++                ChatOptions::for_smart_command(),
++            )
++            .await
++    }
++
++    /// 带上下文的指令处理（文本处理模式）
++    ///
++    /// # Arguments
++    /// * `user_instruction` - 用户的语音指令
++    /// * `selected_text` - 选中的文本
++    ///
++    /// # Returns
++    /// * LLM 处理后的结果
++    pub async fn process_with_context(
++        &self,
++        user_instruction: &str,
++        selected_text: &str,
++    ) -> Result<String> {
++        if user_instruction.trim().is_empty() {
++            return Ok(String::new());
++        }
++
++        tracing::info!(
++            "AssistantProcessor: 文本处理模式 (指令: {}, 上下文长度: {} 字符)",
++            user_instruction,
++            selected_text.len()
++        );
++
++        // 构建包含上下文的用户消息
++        let user_message = format!(
++            "【选中的文本】\n{}\n\n【用户指令】\n{}",
++            selected_text, user_instruction
++        );
++
++        self.client
++            .chat_simple(
++                &self.text_processing_system_prompt,
++                &user_message,
++                ChatOptions::for_smart_command(),
++            )
++            .await
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::config::{DEFAULT_ASSISTANT_QA_PROMPT, DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT};
++
++    fn create_test_config() -> AssistantConfig {
++        AssistantConfig {
++            enabled: true,
++            endpoint: "https://api.example.com/v1/chat/completions".to_string(),
++            model: "test-model".to_string(),
++            api_key: "test-key".to_string(),
++            qa_system_prompt: DEFAULT_ASSISTANT_QA_PROMPT.to_string(),
++            text_processing_system_prompt: DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string(),
++        }
++    }
++
++    #[test]
++    fn test_processor_creation() {
++        let config = create_test_config();
++        let processor = AssistantProcessor::new(config);
++        assert!(!processor.qa_system_prompt.is_empty());
++        assert!(!processor.text_processing_system_prompt.is_empty());
++    }
++}
+diff --git a/src-tauri/src/clipboard_manager.rs b/src-tauri/src/clipboard_manager.rs
+new file mode 100644
+index 0000000..4341a85
+--- /dev/null
++++ b/src-tauri/src/clipboard_manager.rs
+@@ -0,0 +1,235 @@
++// src-tauri/src/clipboard_manager.rs
++//
++// 剪贴板管理模块 - 用于 AI 助手模式
++//
++// 提供选中文本捕获和剪贴板恢复功能
++
++use arboard::Clipboard;
++use enigo::{Direction, Enigo, Key, Keyboard, Settings};
++use std::thread;
++use std::time::Duration;
++use anyhow::Result;
++
++/// RAII守卫：自动恢复剪贴板内容
++///
++/// 当守卫被销毁时，自动将原始剪贴板内容恢复
++pub struct ClipboardGuard {
++    original_content: Option<String>,
++    clipboard: Clipboard,
++}
++
++impl ClipboardGuard {
++    /// 创建守卫并保存当前剪贴板内容
++    pub fn new() -> Result<Self> {
++        let mut clipboard = Clipboard::new()?;
++        let original_content = clipboard.get_text().ok();
++
++        tracing::debug!("ClipboardGuard: 已保存原始剪贴板内容");
++
++        Ok(Self {
++            original_content,
++            clipboard,
++        })
++    }
++
++    /// 手动恢复剪贴板（消费守卫）
++    pub fn restore(mut self) -> Result<()> {
++        if let Some(ref content) = self.original_content {
++            self.clipboard.set_text(content.clone())?;
++            tracing::debug!("ClipboardGuard: 已手动恢复剪贴板");
++        }
++        Ok(())
++    }
++}
++
++impl Drop for ClipboardGuard {
++    fn drop(&mut self) {
++        if let Some(ref content) = self.original_content {
++            // 最大努力恢复，忽略错误
++            let _ = self.clipboard.set_text(content.clone());
++            tracing::debug!("ClipboardGuard: 已自动恢复剪贴板（Drop）");
++        }
++    }
++}
++
++/// 获取当前选中的文本（通过模拟 Ctrl+C）
++///
++/// # 返回值
++/// * `Ok((guard, Some(text)))` - 成功捕获选中文本
++/// * `Ok((guard, None))` - 没有选中文本或选中内容为空
++/// * `Err(e)` - 操作失败
++///
++/// # 说明
++/// 返回的 guard 应该保持存活，直到不再需要恢复剪贴板为止
++///
++/// # 注意
++/// 此函数会在模拟按键前等待一小段时间，以避免与用户正在按住的热键
++/// （如 Alt+Space）产生冲突。
++pub fn get_selected_text() -> Result<(ClipboardGuard, Option<String>)> {
++    // 1. 保存当前剪贴板
++    let guard = ClipboardGuard::new()?;
++
++    // 2. 清空剪贴板（用于检测是否有选中内容）
++    let mut clipboard = Clipboard::new()?;
++    clipboard.set_text("")?;
++
++    // 3. 等待一小段时间，让热键的物理按键状态稳定
++    //    这是为了避免用户按住的修饰键（如 Alt）与模拟的 Ctrl+C 产生冲突
++    //    例如：用户按 Alt+Space 触发 AI 助手，此时 Alt 仍被按下，
++    //    直接模拟 Ctrl+C 可能被系统识别为 Ctrl+Alt+C
++    thread::sleep(Duration::from_millis(50));
++
++    // 4. 模拟 Ctrl+C 复制选中内容
++    let mut enigo = Enigo::new(&Settings::default())?;
++
++    // 尝试先释放常见的修饰键，减少与物理按键的干扰
++    // 注意：这可能不会完全解决问题，因为物理按键会持续发送 KeyDown
++    let _ = enigo.key(Key::Alt, Direction::Release);
++    let _ = enigo.key(Key::Meta, Direction::Release);
++    let _ = enigo.key(Key::Shift, Direction::Release);
++    thread::sleep(Duration::from_millis(10));
++
++    enigo.key(Key::Control, Direction::Press)?;
++    thread::sleep(Duration::from_millis(10));
++    enigo.key(Key::Unicode('c'), Direction::Click)?;
++    thread::sleep(Duration::from_millis(10));
++    enigo.key(Key::Control, Direction::Release)?;
++
++    // 5. 等待剪贴板更新（带重试机制）
++    //    某些应用（如 Electron 应用、IDE）响应较慢，100ms 可能不够
++    let selected_text = wait_for_clipboard_update(&mut clipboard, 3, 100)?;
++
++    if let Some(ref text) = selected_text {
++        tracing::info!("clipboard_manager: 捕获到选中文本 (长度: {} 字符)", text.len());
++    } else {
++        tracing::debug!("clipboard_manager: 未检测到选中文本");
++    }
++
++    Ok((guard, selected_text))
++}
++
++/// 等待剪贴板更新的辅助函数（带重试机制）
++///
++/// # 参数
++/// * `clipboard` - 剪贴板实例
++/// * `max_retries` - 最大重试次数
++/// * `initial_delay_ms` - 初始延迟（毫秒）
++///
++/// # 返回值
++/// * `Ok(Some(text))` - 成功获取到非空文本
++/// * `Ok(None)` - 剪贴板为空或未更新
++fn wait_for_clipboard_update(
++    clipboard: &mut Clipboard,
++    max_retries: u32,
++    initial_delay_ms: u64,
++) -> Result<Option<String>> {
++    let mut delay_ms = initial_delay_ms;
++
++    for attempt in 0..=max_retries {
++        thread::sleep(Duration::from_millis(delay_ms));
++
++        match clipboard.get_text() {
++            Ok(text) if !text.is_empty() => {
++                if attempt > 0 {
++                    tracing::debug!(
++                        "clipboard_manager: 第 {} 次重试后成功获取剪贴板内容",
++                        attempt
++                    );
++                }
++                return Ok(Some(text));
++            }
++            Ok(_) => {
++                // 剪贴板为空，可能还没更新完成，继续重试
++                if attempt < max_retries {
++                    tracing::debug!(
++                        "clipboard_manager: 剪贴板为空，重试 {}/{}",
++                        attempt + 1,
++                        max_retries
++                    );
++                    // 逐渐增加等待时间
++                    delay_ms = (delay_ms as f64 * 1.5) as u64;
++                }
++            }
++            Err(e) => {
++                tracing::warn!("clipboard_manager: 读取剪贴板失败: {}", e);
++                if attempt < max_retries {
++                    delay_ms = (delay_ms as f64 * 1.5) as u64;
++                }
++            }
++        }
++    }
++
++    // 所有重试都失败，返回 None（表示没有选中内容）
++    Ok(None)
++}
++
++/// 插入文本（支持上下文感知）
++///
++/// # 参数
++/// * `text` - 要插入的文本
++/// * `has_selection` - 是否有选中文本（如果为 true，粘贴会替换选中内容）
++/// * `clipboard_guard` - 可选的剪贴板守卫（操作完成后恢复）
++///
++/// # 行为
++/// * 有选中文本时：Ctrl+V 会替换选中内容
++/// * 无选中文本时：Ctrl+V 会在光标处插入
++pub fn insert_text_with_context(
++    text: &str,
++    has_selection: bool,
++    clipboard_guard: Option<ClipboardGuard>,
++) -> Result<()> {
++    let mut clipboard = Clipboard::new()?;
++    let mut enigo = Enigo::new(&Settings::default())?;
++
++    // 1. 将文本写入剪贴板
++    clipboard.set_text(text)?;
++    thread::sleep(Duration::from_millis(50));
++
++    tracing::info!(
++        "clipboard_manager: 准备插入文本 (长度: {} 字符, 有选中: {})",
++        text.len(),
++        has_selection
++    );
++
++    // 2. 模拟 Ctrl+V 粘贴
++    //    注意：如果有选中内容，粘贴会自动替换；如果没有，会在光标处插入
++    enigo.key(Key::Control, Direction::Press)?;
++    thread::sleep(Duration::from_millis(10));
++    enigo.key(Key::Unicode('v'), Direction::Click)?;
++    thread::sleep(Duration::from_millis(10));
++    enigo.key(Key::Control, Direction::Release)?;
++
++    // 3. 等待粘贴完成
++    thread::sleep(Duration::from_millis(100));
++
++    // 4. 恢复原始剪贴板
++    if let Some(guard) = clipboard_guard {
++        guard.restore()?;
++        tracing::debug!("clipboard_manager: 已恢复原始剪贴板");
++    }
++
++    tracing::info!("clipboard_manager: 文本插入成功");
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_clipboard_guard_creation() {
++        let guard = ClipboardGuard::new();
++        assert!(guard.is_ok());
++    }
++
++    #[test]
++    fn test_get_selected_text() {
++        // 注意：此测试需要手动运行，因为需要实际的剪贴板和键盘模拟
++        // 仅检查函数签名是否正确
++        let result = get_selected_text();
++        // 在CI环境可能失败，所以只检查类型
++        match result {
++            Ok(_) | Err(_) => {}
++        }
++    }
++}
+diff --git a/src-tauri/src/config.rs b/src-tauri/src/config.rs
+index 595aae1..96d07dd 100644
+--- a/src-tauri/src/config.rs
++++ b/src-tauri/src/config.rs
+@@ -49,6 +49,32 @@ pub enum TranscriptionMode {
+     SmartCommand,
+ }
+ 
++// ============================================================================
++// 触发模式（新增）
++// ============================================================================
++
++/// 热键触发模式
++///
++/// 决定用户按下哪个快捷键，从而决定处理流程
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum TriggerMode {
++    /// 听写模式：语音 → ASR → 可选润色 → 插入文本
++    Dictation,
++    /// AI助手模式：(可选)选中文本 + 语音指令 → ASR → LLM处理 → 插入/替换文本
++    AiAssistant,
++}
++
++impl TriggerMode {
++    /// 获取显示名称
++    pub fn display_name(&self) -> &'static str {
++        match self {
++            TriggerMode::Dictation => "听写模式",
++            TriggerMode::AiAssistant => "AI助手模式",
++        }
++    }
++}
++
+ impl TranscriptionMode {
+     /// 获取显示名称
+     pub fn display_name(&self) -> &'static str {
+@@ -199,6 +225,83 @@ impl Default for HotkeyConfig {
+     }
+ }
+ 
++// ============================================================================
++// 双快捷键配置（新增）
++// ============================================================================
++
++/// 双快捷键配置
++///
++/// 支持两个独立的快捷键，分别触发听写模式和AI助手模式
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct DualHotkeyConfig {
++    /// 听写模式快捷键（默认 Ctrl+Win）
++    #[serde(default = "default_dictation_hotkey")]
++    pub dictation: HotkeyConfig,
++    /// AI助手模式快捷键（默认 Alt+Space）
++    #[serde(default = "default_assistant_hotkey")]
++    pub assistant: HotkeyConfig,
++}
++
++fn default_dictation_hotkey() -> HotkeyConfig {
++    HotkeyConfig {
++        keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
++        mode: HotkeyMode::Press,
++    }
++}
++
++fn default_assistant_hotkey() -> HotkeyConfig {
++    HotkeyConfig {
++        keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
++        mode: HotkeyMode::Press,
++    }
++}
++
++impl Default for DualHotkeyConfig {
++    fn default() -> Self {
++        Self {
++            dictation: default_dictation_hotkey(),
++            assistant: default_assistant_hotkey(),
++        }
++    }
++}
++
++impl DualHotkeyConfig {
++    /// 验证双快捷键配置
++    ///
++    /// 检查：
++    /// 1. 两个快捷键各自有效
++    /// 2. 两个快捷键不冲突（不完全相同）
++    /// 3. 两个快捷键不存在子集关系（避免按键冲突）
++    pub fn validate(&self) -> Result<()> {
++        // 验证各自配置
++        self.dictation.validate()
++            .map_err(|e| anyhow::anyhow!("听写模式快捷键配置无效: {}", e))?;
++        self.assistant.validate()
++            .map_err(|e| anyhow::anyhow!("AI助手模式快捷键配置无效: {}", e))?;
++
++        // 检查冲突：两个快捷键的按键集合不能完全相同
++        let dictation_set: HashSet<_> = self.dictation.keys.iter().collect();
++        let assistant_set: HashSet<_> = self.assistant.keys.iter().collect();
++
++        if dictation_set == assistant_set {
++            anyhow::bail!("听写模式和AI助手模式不能使用相同的快捷键");
++        }
++
++        // 检查子集关系：一组快捷键不能是另一组的子集
++        // 例如：听写 Ctrl+Space，助手 Ctrl+Shift+Space 会导致冲突
++        // 因为按下 Ctrl+Shift+Space 时必须先经过 Ctrl+Space 状态
++        if dictation_set.is_subset(&assistant_set) || assistant_set.is_subset(&dictation_set) {
++            anyhow::bail!(
++                "一组快捷键不能包含另一组快捷键（这会导致按键冲突）。\n\
++                 例如：Ctrl+Space 和 Ctrl+Shift+Space 会冲突，\n\
++                 因为按下后者时会先触发前者。"
++            );
++        }
++
++        Ok(())
++    }
++}
++
+ impl HotkeyConfig {
+     /// 检查是否包含至少一个修饰键
+     pub fn has_modifier(&self) -> bool {
+@@ -296,15 +399,21 @@ pub struct AppConfig {
+     pub enable_llm_post_process: bool,
+     #[serde(default)]
+     pub llm_config: LlmConfig,
+-    /// Smart Command 独立配置
++    /// Smart Command 独立配置（保留以便向后兼容）
+     #[serde(default)]
+     pub smart_command_config: SmartCommandConfig,
++    /// AI 助手配置（新增）
++    #[serde(default)]
++    pub assistant_config: AssistantConfig,
+     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
+     #[serde(default)]
+     pub close_action: Option<String>,
+-    /// 热键配置（默认 Ctrl+Win）
++    /// 热键配置（旧版，保留以便迁移）
++    #[serde(default, skip_serializing)]
++    pub hotkey_config: Option<HotkeyConfig>,
++    /// 双快捷键配置（新版）
+     #[serde(default)]
+-    pub hotkey_config: HotkeyConfig,
++    pub dual_hotkey_config: DualHotkeyConfig,
+     /// 转录处理模式（默认普通模式）
+     #[serde(default)]
+     pub transcription_mode: TranscriptionMode,
+@@ -365,7 +474,7 @@ fn default_active_preset_id() -> String {
+ // Smart Command 配置
+ // ============================================================================
+ 
+-/// Smart Command 默认系统提示词
++/// Smart Command 默认系统提示词（问答模式）
+ pub const DEFAULT_SMART_COMMAND_PROMPT: &str = r#"你是一个智能语音助手。用户会通过语音向你提问，你需要：
+ 1. 理解用户的问题
+ 2. 给出简洁、准确、有用的回答
+@@ -376,7 +485,33 @@ pub const DEFAULT_SMART_COMMAND_PROMPT: &str = r#"你是一个智能语音助手
+ - 避免过多的解释和废话
+ - 如果是代码相关问题，直接给出代码"#;
+ 
+-/// Smart Command 独立配置
++/// AI 助手默认系统提示词 - 问答模式（无选中文本）
++pub const DEFAULT_ASSISTANT_QA_PROMPT: &str = r#"你是一个智能语音助手。用户会通过语音向你提问，你需要：
++1. 理解用户的问题
++2. 给出简洁、准确、有用的回答
++3. 如果问题不够明确，给出最可能的解答
++
++注意：
++- 回答要简洁明了，适合直接粘贴使用
++- 避免过多的解释和废话
++- 如果是代码相关问题，直接给出代码"#;
++
++/// AI 助手默认系统提示词 - 文本处理模式（有选中文本）
++pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
++1. 根据用户的指令对文本进行相应处理（润色、翻译、解释、修改等）
++2. 直接输出处理后的结果，不要添加多余的解释
++3. 保持原文的格式和结构（除非用户要求改变）
++
++常见任务示例：
++- "润色" / "改得更专业" → 优化表达，提升文笔
++- "翻译成英文" → 输出英文翻译结果
++- "解释这段代码" → 用简洁的语言说明代码功能
++- "修复语法错误" → 纠正错别字和语法问题
++- "总结" → 提炼核心要点
++
++注意：直接输出处理结果，不要添加"这是修改后的版本"之类的前缀。"#;
++
++/// Smart Command 独立配置（保留向后兼容）
+ ///
+ /// 与 LLM 润色模块完全独立，拥有自己的 API 配置和系统提示词
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+@@ -398,6 +533,31 @@ pub struct SmartCommandConfig {
+     pub system_prompt: String,
+ }
+ 
++/// AI 助手配置（新增，取代 SmartCommandConfig）
++///
++/// 支持双系统提示词：问答模式和文本处理模式
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct AssistantConfig {
++    /// 是否启用 AI 助手模式
++    #[serde(default)]
++    pub enabled: bool,
++    /// API 端点
++    #[serde(default = "default_assistant_endpoint")]
++    pub endpoint: String,
++    /// 模型名称
++    #[serde(default = "default_assistant_model")]
++    pub model: String,
++    /// API Key
++    #[serde(default)]
++    pub api_key: String,
++    /// 问答模式系统提示词（无选中文本时使用）
++    #[serde(default = "default_assistant_qa_prompt")]
++    pub qa_system_prompt: String,
++    /// 文本处理模式系统提示词（有选中文本时使用）
++    #[serde(default = "default_assistant_text_processing_prompt")]
++    pub text_processing_system_prompt: String,
++}
++
+ fn default_smart_command_endpoint() -> String {
+     "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
+ }
+@@ -410,6 +570,22 @@ fn default_smart_command_prompt() -> String {
+     DEFAULT_SMART_COMMAND_PROMPT.to_string()
+ }
+ 
++fn default_assistant_endpoint() -> String {
++    "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
++}
++
++fn default_assistant_model() -> String {
++    "glm-4-flash-250414".to_string()
++}
++
++fn default_assistant_qa_prompt() -> String {
++    DEFAULT_ASSISTANT_QA_PROMPT.to_string()
++}
++
++fn default_assistant_text_processing_prompt() -> String {
++    DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
++}
++
+ impl Default for SmartCommandConfig {
+     fn default() -> Self {
+         Self {
+@@ -422,6 +598,19 @@ impl Default for SmartCommandConfig {
+     }
+ }
+ 
++impl Default for AssistantConfig {
++    fn default() -> Self {
++        Self {
++            enabled: false,
++            endpoint: default_assistant_endpoint(),
++            model: default_assistant_model(),
++            api_key: String::new(),
++            qa_system_prompt: default_assistant_qa_prompt(),
++            text_processing_system_prompt: default_assistant_text_processing_prompt(),
++        }
++    }
++}
++
+ impl SmartCommandConfig {
+     /// 检查配置是否有效（API Key 已填写）
+     pub fn is_valid(&self) -> bool {
+@@ -429,6 +618,13 @@ impl SmartCommandConfig {
+     }
+ }
+ 
++impl AssistantConfig {
++    /// 检查配置是否有效（API Key 已填写）
++    pub fn is_valid(&self) -> bool {
++        !self.api_key.is_empty() && !self.endpoint.is_empty() && !self.model.is_empty()
++    }
++}
++
+ // 为了兼容旧版本配置，如果反序列化时 presets 为空，手动填充默认值
+ impl Default for LlmConfig {
+     fn default() -> Self {
+@@ -456,8 +652,10 @@ impl AppConfig {
+             enable_llm_post_process: false,
+             llm_config: LlmConfig::default(),
+             smart_command_config: SmartCommandConfig::default(),
++            assistant_config: AssistantConfig::default(),
+             close_action: None,
+-            hotkey_config: HotkeyConfig::default(),
++            hotkey_config: None,
++            dual_hotkey_config: DualHotkeyConfig::default(),
+             transcription_mode: TranscriptionMode::default(),
+         }
+     }
+@@ -477,7 +675,9 @@ impl AppConfig {
+             let content = std::fs::read_to_string(&path)?;
+             let mut config: AppConfig = serde_json::from_str(&content)?;
+ 
+-            // 迁移逻辑：如果 asr_config 为空但旧字段有值，自动迁移
++            // ========== 迁移逻辑 ==========
++
++            // 迁移 1: ASR 配置迁移（已有）
+             if config.asr_config.primary.api_key.is_empty() && !config.dashscope_api_key.is_empty() {
+                 tracing::info!("检测到旧配置格式，自动迁移到新格式");
+                 config.asr_config.primary = AsrProviderConfig {
+@@ -497,6 +697,37 @@ impl AppConfig {
+                 }
+             }
+ 
++            // 迁移 2: 旧单快捷键 → 新双快捷键
++            if let Some(old_hotkey) = config.hotkey_config.take() {
++                // 只有在 dual_hotkey_config 是默认值时才迁移
++                let is_default = config.dual_hotkey_config.dictation.keys == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
++                    && config.dual_hotkey_config.assistant.keys == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
++
++                if is_default {
++                    tracing::info!("迁移旧快捷键配置 {} 到听写模式", old_hotkey.format_display());
++                    config.dual_hotkey_config.dictation = old_hotkey;
++                }
++            }
++
++            // 迁移 3: SmartCommandConfig → AssistantConfig
++            if config.smart_command_config.enabled && config.smart_command_config.is_valid() {
++                // 如果 assistant_config 是默认值（未配置），从 smart_command_config 迁移
++                if !config.assistant_config.is_valid() {
++                    tracing::info!("迁移 Smart Command 配置到 AI 助手配置");
++                    config.assistant_config = AssistantConfig {
++                        enabled: config.smart_command_config.enabled,
++                        endpoint: config.smart_command_config.endpoint.clone(),
++                        model: config.smart_command_config.model.clone(),
++                        api_key: config.smart_command_config.api_key.clone(),
++                        qa_system_prompt: config.smart_command_config.system_prompt.clone(),
++                        text_processing_system_prompt: default_assistant_text_processing_prompt(),
++                    };
++                    // 迁移后禁用旧配置
++                    config.smart_command_config.enabled = false;
++                }
++            }
++
++            // LLM 预设检查（已有）
+             if config.llm_config.presets.is_empty() {
+                  tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
+             }
+diff --git a/src-tauri/src/hotkey_service.rs b/src-tauri/src/hotkey_service.rs
+index 9a4a322..16753af 100644
+--- a/src-tauri/src/hotkey_service.rs
++++ b/src-tauri/src/hotkey_service.rs
+@@ -1,4 +1,4 @@
+-// 全局快捷键监听模块 - 单例模式重构
++// 全局快捷键监听模块 - 单例模式重构 + 双模式支持
+ use rdev::{listen, Event, EventType, Key};
+ use std::sync::{Arc, Mutex, RwLock};
+ use std::sync::atomic::{AtomicBool, Ordering};
+@@ -6,7 +6,7 @@ use std::thread;
+ use std::time::Duration;
+ use std::collections::HashSet;
+ use anyhow::Result;
+-use crate::config::{HotkeyConfig, HotkeyKey};
++use crate::config::{HotkeyConfig, HotkeyKey, TriggerMode, DualHotkeyConfig};
+ 
+ // 看门狗检查间隔（毫秒）
+ const WATCHDOG_INTERVAL_MS: u64 = 100;
+@@ -19,22 +19,26 @@ struct HotkeyState {
+     is_recording: bool,
+     pressed_keys: HashSet<HotkeyKey>,
+     watchdog_running: bool,
++    /// 当前触发的模式（如果正在录音）
++    current_trigger_mode: Option<TriggerMode>,
+ }
+ 
+-/// 回调函数类型
+-type Callback = Arc<dyn Fn() + Send + Sync>;
++/// 回调函数类型（接收触发模式参数）
++type Callback = Arc<dyn Fn(TriggerMode) + Send + Sync>;
+ 
+-/// 单例热键服务
++/// 单例热键服务（支持双模式）
+ pub struct HotkeyService {
+     /// 服务是否激活（控制是否响应热键事件）
+     is_active: Arc<AtomicBool>,
+-    /// 当前热键配置（可动态更新）
+-    config: Arc<RwLock<HotkeyConfig>>,
++    /// 听写模式快捷键配置
++    dictation_config: Arc<RwLock<HotkeyConfig>>,
++    /// AI助手模式快捷键配置
++    assistant_config: Arc<RwLock<HotkeyConfig>>,
+     /// 内部状态
+     state: Arc<Mutex<HotkeyState>>,
+     /// 监听线程是否已启动
+     listener_started: Arc<AtomicBool>,
+-    /// 回调函数
++    /// 回调函数（现在接收 TriggerMode 参数）
+     on_start: Arc<RwLock<Option<Callback>>>,
+     on_stop: Arc<RwLock<Option<Callback>>>,
+ }
+@@ -43,7 +47,11 @@ impl HotkeyService {
+     pub fn new() -> Self {
+         Self {
+             is_active: Arc::new(AtomicBool::new(false)),
+-            config: Arc::new(RwLock::new(HotkeyConfig::default())),
++            dictation_config: Arc::new(RwLock::new(HotkeyConfig::default())),
++            assistant_config: Arc::new(RwLock::new(HotkeyConfig {
++                keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
++                mode: crate::config::HotkeyMode::Press,
++            })),
+             state: Arc::new(Mutex::new(HotkeyState::default())),
+             listener_started: Arc::new(AtomicBool::new(false)),
+             on_start: Arc::new(RwLock::new(None)),
+@@ -130,7 +138,7 @@ impl HotkeyService {
+         }
+     }
+ 
+-    /// 初始化监听线程（只调用一次）
++    /// 初始化监听线程（只调用一次，带自动重启机制）
+     pub fn init_listener(&self) -> Result<()> {
+         // 防止重复启动
+         if self.listener_started.swap(true, Ordering::SeqCst) {
+@@ -138,177 +146,289 @@ impl HotkeyService {
+             return Ok(());
+         }
+ 
+-        tracing::info!("初始化全局快捷键监听线程");
++        tracing::info!("初始化全局快捷键监听线程（双模式）");
+ 
+         let is_active = Arc::clone(&self.is_active);
+-        let config = Arc::clone(&self.config);
++        let dictation_config = Arc::clone(&self.dictation_config);
++        let assistant_config = Arc::clone(&self.assistant_config);
+         let state = Arc::clone(&self.state);
+         let on_start = Arc::clone(&self.on_start);
+         let on_stop = Arc::clone(&self.on_stop);
+ 
+         thread::spawn(move || {
+             tracing::info!("快捷键监听线程已启动");
+-            let mut first_key_logged = false;
+ 
+-            let callback = move |event: Event| {
+-                // 检查服务是否激活
+-                if !is_active.load(Ordering::Relaxed) {
+-                    return;
+-                }
+-
+-                // 第一次检测到按键时记录
+-                if !first_key_logged && matches!(event.event_type, EventType::KeyPress(_)) {
+-                    first_key_logged = true;
+-                    tracing::info!("✓ rdev 正常工作 - 已检测到键盘事件");
+-                }
+-
+-                match event.event_type {
+-                    EventType::KeyPress(key) => {
+-                        if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
+-                            let current_config = config.read().unwrap().clone();
+-                            let mut s = state.lock().unwrap();
+-
+-                            s.pressed_keys.insert(hotkey_key);
++            // 外层循环：如果 rdev 监听器崩溃则自动重启
++            loop {
++                let mut first_key_logged = false;
++
++                // 克隆变量供闭包使用
++                let is_active_inner = Arc::clone(&is_active);
++                let dictation_config_inner = Arc::clone(&dictation_config);
++                let assistant_config_inner = Arc::clone(&assistant_config);
++                let state_inner = Arc::clone(&state);
++                let on_start_inner = Arc::clone(&on_start);
++                let on_stop_inner = Arc::clone(&on_stop);
++
++                let callback = move |event: Event| {
++                    // 检查服务是否激活
++                    if !is_active_inner.load(Ordering::Relaxed) {
++                        return;
++                    }
+ 
+-                            // 严格匹配：检查包含关系 + 数量一致（防止 Ctrl+Space 被 Ctrl+Shift+Space 误触发）
+-                            let contains_all = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
+-                            let count_match = s.pressed_keys.len() == current_config.keys.len();
+-                            if contains_all && count_match && !s.is_recording {
+-                                s.is_recording = true;
+-                                tracing::info!("检测到快捷键按下: {}，开始录音", current_config.format_display());
++                    // 第一次检测到按键时记录
++                    if !first_key_logged && matches!(event.event_type, EventType::KeyPress(_)) {
++                        first_key_logged = true;
++                        tracing::info!("✓ rdev 正常工作 - 已检测到键盘事件");
++                    }
+ 
+-                                // 启动看门狗
+-                                if s.watchdog_running {
+-                                    drop(s);
+-                                    if let Some(cb) = on_start.read().unwrap().as_ref() {
+-                                        cb();
+-                                    }
+-                                    return;
++                    match event.event_type {
++                        EventType::KeyPress(key) => {
++                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
++                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
++                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
++                                let mut s = state_inner.lock().unwrap();
++
++                                s.pressed_keys.insert(hotkey_key);
++
++                                // 调试日志：检测按键数量异常（可能有键卡死）
++                                let max_keys = dictation_cfg.keys.len().max(assistant_cfg.keys.len());
++                                if s.pressed_keys.len() > max_keys + 2 {
++                                    tracing::warn!(
++                                        "当前按下按键数 ({}) 异常偏多，可能有按键状态卡死: {:?}",
++                                        s.pressed_keys.len(),
++                                        s.pressed_keys
++                                    );
+                                 }
+ 
+-                                s.watchdog_running = true;
+-                                drop(s);
++                                // 严格匹配：检查是否匹配两个配置中的任意一个
++                                let (matches_dictation, matches_assistant) = {
++                                    let contains_dictation = dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
++                                    let count_dictation = s.pressed_keys.len() == dictation_cfg.keys.len();
++
++                                    let contains_assistant = assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
++                                    let count_assistant = s.pressed_keys.len() == assistant_cfg.keys.len();
++
++                                    (contains_dictation && count_dictation, contains_assistant && count_assistant)
++                                };
++
++                                if !s.is_recording {
++                                    // 确定触发模式（听写优先）
++                                    let trigger_mode = if matches_dictation {
++                                        Some(TriggerMode::Dictation)
++                                    } else if matches_assistant {
++                                        Some(TriggerMode::AiAssistant)
++                                    } else {
++                                        None
++                                    };
++
++                                    if let Some(mode) = trigger_mode {
++                                        s.is_recording = true;
++                                        s.current_trigger_mode = Some(mode);
++                                        let mode_name = mode.display_name();
++                                        tracing::info!("检测到快捷键按下: {}，开始录音", mode_name);
++
++                                        // 启动看门狗
++                                        if s.watchdog_running {
++                                            drop(s);
++                                            if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
++                                                cb(mode);
++                                            }
++                                            return;
++                                        }
+ 
+-                                // 启动看门狗线程
+-                                let state_wd = Arc::clone(&state);
+-                                let config_wd = Arc::clone(&config);
+-                                let is_active_wd = Arc::clone(&is_active);
+-                                let on_stop_wd = Arc::clone(&on_stop);
++                                        s.watchdog_running = true;
++                                        drop(s);
+ 
+-                                thread::spawn(move || {
+-                                    tracing::debug!("看门狗线程已启动");
+-                                    let mut release_detected_count: u64 = 0;
+-                                    let required_count = (KEY_RELEASE_STABLE_MS / WATCHDOG_INTERVAL_MS).max(1);
++                                        // 启动看门狗线程
++                                        let state_wd = Arc::clone(&state_inner);
++                                        let dictation_cfg_wd = Arc::clone(&dictation_config_inner);
++                                        let assistant_cfg_wd = Arc::clone(&assistant_config_inner);
++                                        let is_active_wd = Arc::clone(&is_active_inner);
++                                        let on_stop_wd = Arc::clone(&on_stop_inner);
+ 
+-                                    loop {
+-                                        thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
++                                        thread::spawn(move || {
++                                            tracing::debug!("看门狗线程已启动");
++                                            let mut release_detected_count: u64 = 0;
++                                            let required_count = (KEY_RELEASE_STABLE_MS / WATCHDOG_INTERVAL_MS).max(1);
+ 
+-                                        // 检查服务是否仍然激活
+-                                        if !is_active_wd.load(Ordering::Relaxed) {
+-                                            let mut s = state_wd.lock().unwrap();
+-                                            s.watchdog_running = false;
+-                                            s.is_recording = false;
+-                                            tracing::debug!("看门狗线程退出（服务已停止）");
+-                                            break;
+-                                        }
++                                            loop {
++                                                thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
+ 
+-                                        let s = state_wd.lock().unwrap();
+-                                        if !s.watchdog_running || !s.is_recording {
+-                                            tracing::debug!("看门狗线程正常退出");
+-                                            break;
+-                                        }
++                                                // 检查服务是否仍然激活
++                                                if !is_active_wd.load(Ordering::Relaxed) {
++                                                    let mut s = state_wd.lock().unwrap();
++                                                    s.watchdog_running = false;
++                                                    s.is_recording = false;
++                                                    s.current_trigger_mode = None;
++                                                    tracing::debug!("看门狗线程退出（服务已停止）");
++                                                    break;
++                                                }
+ 
+-                                        let current_config = config_wd.read().unwrap();
+-                                        let all_pressed = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
+-                                        drop(current_config);
+-                                        drop(s);
++                                                let s = state_wd.lock().unwrap();
++                                                if !s.watchdog_running || !s.is_recording {
++                                                    tracing::debug!("看门狗线程正常退出");
++                                                    break;
++                                                }
+ 
+-                                        if !all_pressed {
+-                                            release_detected_count += 1;
+-                                            if release_detected_count >= required_count {
+-                                                let mut s = state_wd.lock().unwrap();
+-                                                if s.is_recording {
+-                                                    s.is_recording = false;
+-                                                    s.watchdog_running = false;
+-                                                    drop(s);
+-                                                    tracing::warn!("看门狗检测到按键释放事件丢失，强制停止录音");
+-                                                    if let Some(cb) = on_stop_wd.read().unwrap().as_ref() {
+-                                                        cb();
++                                                // 根据当前触发模式检查对应的按键
++                                                let all_pressed = match s.current_trigger_mode {
++                                                    Some(TriggerMode::Dictation) => {
++                                                        let cfg = dictation_cfg_wd.read().unwrap();
++                                                        cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
++                                                    }
++                                                    Some(TriggerMode::AiAssistant) => {
++                                                        let cfg = assistant_cfg_wd.read().unwrap();
++                                                        cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
+                                                     }
++                                                    None => false,
++                                                };
++                                                drop(s);
++
++                                                if !all_pressed {
++                                                    release_detected_count += 1;
++                                                    if release_detected_count >= required_count {
++                                                        let mut s = state_wd.lock().unwrap();
++                                                        if s.is_recording {
++                                                            let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
++                                                            s.is_recording = false;
++                                                            s.watchdog_running = false;
++                                                            s.current_trigger_mode = None;
++                                                            drop(s);
++                                                            tracing::warn!("看门狗检测到按键释放事件丢失，强制停止录音");
++                                                            if let Some(cb) = on_stop_wd.read().unwrap().as_ref() {
++                                                                cb(mode);
++                                                            }
++                                                        }
++                                                        break;
++                                                    }
++                                                } else {
++                                                    release_detected_count = 0;
+                                                 }
+-                                                break;
+                                             }
+-                                        } else {
+-                                            release_detected_count = 0;
+-                                        }
+-                                    }
+ 
+-                                    let mut s = state_wd.lock().unwrap();
+-                                    s.watchdog_running = false;
+-                                });
++                                            let mut s = state_wd.lock().unwrap();
++                                            s.watchdog_running = false;
++                                        });
+ 
+-                                if let Some(cb) = on_start.read().unwrap().as_ref() {
+-                                    cb();
++                                        if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
++                                            cb(mode);
++                                        }
++                                    }
+                                 }
+                             }
+                         }
+-                    }
+-                    EventType::KeyRelease(key) => {
+-                        if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
+-                            let current_config = config.read().unwrap().clone();
+-                            let mut s = state.lock().unwrap();
+-
+-                            s.pressed_keys.remove(&hotkey_key);
+-
+-                            // 防呆逻辑：如果释放的是修饰键且未录音，检查是否所有修饰键都已释放
+-                            if hotkey_key.is_modifier() && !s.is_recording {
+-                                let has_any_modifier = s.pressed_keys.iter().any(|k| k.is_modifier());
+-                                if !has_any_modifier {
+-                                    s.pressed_keys.clear();
+-                                    tracing::debug!("所有修饰键已释放，强制清理按键状态");
++                        EventType::KeyRelease(key) => {
++                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
++                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
++                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
++                                let mut s = state_inner.lock().unwrap();
++
++                                s.pressed_keys.remove(&hotkey_key);
++
++                                // 增强的防呆逻辑：如果释放的是修饰键且未录音，检查是否所有修饰键都已释放
++                                if hotkey_key.is_modifier() && !s.is_recording {
++                                    let has_any_modifier = s.pressed_keys.iter().any(|k| k.is_modifier());
++                                    if !has_any_modifier && !s.pressed_keys.is_empty() {
++                                        // 所有修饰键已释放，但还有其他键残留，可能是状态卡死
++                                        tracing::warn!(
++                                            "所有修饰键已释放但仍有残留按键: {:?}，强制清理",
++                                            s.pressed_keys
++                                        );
++                                        s.pressed_keys.clear();
++                                    } else if !has_any_modifier {
++                                        s.pressed_keys.clear();
++                                        tracing::debug!("所有修饰键已释放，强制清理按键状态");
++                                    }
+                                 }
+-                            }
+ 
+-                            if !s.is_recording {
+-                                return;
+-                            }
++                                if !s.is_recording {
++                                    return;
++                                }
+ 
+-                            let all_pressed = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
+-                            if !all_pressed {
+-                                s.is_recording = false;
+-                                s.watchdog_running = false;
+-                                drop(s);
++                                // 根据当前触发模式检查对应的按键是否全部按下
++                                let all_pressed = match s.current_trigger_mode {
++                                    Some(TriggerMode::Dictation) => {
++                                        dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
++                                    }
++                                    Some(TriggerMode::AiAssistant) => {
++                                        assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
++                                    }
++                                    None => false,
++                                };
+ 
+-                                tracing::info!("检测到快捷键释放，停止录音");
+-                                if let Some(cb) = on_stop.read().unwrap().as_ref() {
+-                                    cb();
++                                if !all_pressed {
++                                    let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
++                                    s.is_recording = false;
++                                    s.watchdog_running = false;
++                                    s.current_trigger_mode = None;
++                                    drop(s);
++
++                                    tracing::info!("检测到快捷键释放，停止录音");
++                                    if let Some(cb) = on_stop_inner.read().unwrap().as_ref() {
++                                        cb(mode);
++                                    }
+                                 }
+                             }
+                         }
++                        _ => {}
+                     }
+-                    _ => {}
++                };
++
++                // 执行监听
++                tracing::info!("开始执行 rdev listen...");
++                if let Err(error) = listen(callback) {
++                    tracing::error!("rdev 监听器发生错误退出: {:?}。将在 2 秒后重启监听。", error);
++                } else {
++                    tracing::warn!("rdev 监听器意外正常返回（通常不应发生）。将在 2 秒后重启监听。");
+                 }
+-            };
+ 
+-            if let Err(error) = listen(callback) {
+-                tracing::error!("无法监听键盘事件: {:?}", error);
++                // 重启前重置状态，防止按键卡死
++                {
++                    let mut s = state.lock().unwrap();
++                    s.pressed_keys.clear();
++                    s.is_recording = false;
++                    s.watchdog_running = false;
++                    s.current_trigger_mode = None;
++                }
++
++                // 等待一会再重启，避免死循环占用 CPU
++                thread::sleep(Duration::from_secs(2));
++                tracing::info!("正在重启 rdev 监听器...");
+             }
+         });
+ 
+         Ok(())
+     }
+ 
+-    /// 更新配置并激活服务
+-    pub fn activate<F1, F2>(&self, config: HotkeyConfig, on_start: F1, on_stop: F2) -> Result<()>
++    /// 激活双模式快捷键服务（新接口）
++    ///
++    /// # Arguments
++    /// * `config` - 双快捷键配置（听写模式 + AI助手模式）
++    /// * `on_start` - 开始录音回调（接收 TriggerMode 参数）
++    /// * `on_stop` - 停止录音回调（接收 TriggerMode 参数）
++    pub fn activate_dual<F1, F2>(
++        &self,
++        config: DualHotkeyConfig,
++        on_start: F1,
++        on_stop: F2,
++    ) -> Result<()>
+     where
+-        F1: Fn() + Send + Sync + 'static,
+-        F2: Fn() + Send + Sync + 'static,
++        F1: Fn(TriggerMode) + Send + Sync + 'static,
++        F2: Fn(TriggerMode) + Send + Sync + 'static,
+     {
+-        let hotkey_display = config.format_display();
+-        tracing::info!("激活快捷键服务 ({})", hotkey_display);
++        // 验证配置
++        config.validate()?;
++
++        tracing::info!(
++            "激活双模式快捷键服务 (听写: {}, AI助手: {})",
++            config.dictation.format_display(),
++            config.assistant.format_display()
++        );
+ 
+         // 更新配置
+-        *self.config.write().unwrap() = config;
++        *self.dictation_config.write().unwrap() = config.dictation;
++        *self.assistant_config.write().unwrap() = config.assistant;
+ 
+         // 更新回调
+         *self.on_start.write().unwrap() = Some(Arc::new(on_start));
+@@ -320,6 +440,7 @@ impl HotkeyService {
+             s.is_recording = false;
+             s.pressed_keys.clear();
+             s.watchdog_running = false;
++            s.current_trigger_mode = None;
+         }
+ 
+         // 确保监听线程已启动
+@@ -331,6 +452,39 @@ impl HotkeyService {
+         Ok(())
+     }
+ 
++    /// 更新配置并激活服务（旧接口，向后兼容）
++    ///
++    /// 注意：此方法已过时，仅用于向后兼容。新代码应使用 activate_dual()
++    #[deprecated(note = "Use activate_dual() instead")]
++    #[allow(dead_code)]
++    pub fn activate<F1, F2>(&self, config: HotkeyConfig, on_start: F1, on_stop: F2) -> Result<()>
++    where
++        F1: Fn() + Send + Sync + 'static,
++        F2: Fn() + Send + Sync + 'static,
++    {
++        let hotkey_display = config.format_display();
++        tracing::info!("激活快捷键服务 ({})", hotkey_display);
++
++        // 将单配置映射到双配置（听写模式）
++        let dual_config = DualHotkeyConfig {
++            dictation: config,
++            assistant: HotkeyConfig {
++                keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
++                mode: crate::config::HotkeyMode::Press,
++            },
++        };
++
++        // 包装回调来忽略 TriggerMode 参数
++        let on_start_wrapped = move |_mode: TriggerMode| {
++            on_start();
++        };
++        let on_stop_wrapped = move |_mode: TriggerMode| {
++            on_stop();
++        };
++
++        self.activate_dual(dual_config, on_start_wrapped, on_stop_wrapped)
++    }
++
+     /// 停用服务（不终止线程）
+     pub fn deactivate(&self) {
+         tracing::info!("停用快捷键服务");
+@@ -341,10 +495,41 @@ impl HotkeyService {
+         s.is_recording = false;
+         s.pressed_keys.clear();
+         s.watchdog_running = false;
++        s.current_trigger_mode = None;
+     }
+ 
+     /// 检查服务是否激活
+     pub fn is_active(&self) -> bool {
+         self.is_active.load(Ordering::Relaxed)
+     }
++
++    /// 强制重置热键状态（用于手动修复状态卡死问题）
++    pub fn reset_state(&self) {
++        let mut s = self.state.lock().unwrap();
++        tracing::info!(
++            "强制重置热键状态。清理前按键: {:?}, is_recording: {}",
++            s.pressed_keys,
++            s.is_recording
++        );
++        s.pressed_keys.clear();
++        s.is_recording = false;
++        s.watchdog_running = false;
++        s.current_trigger_mode = None;
++    }
++
++    /// 获取当前状态信息（用于调试）
++    pub fn get_debug_info(&self) -> String {
++        let s = self.state.lock().unwrap();
++        let dictation_cfg = self.dictation_config.read().unwrap();
++        let assistant_cfg = self.assistant_config.read().unwrap();
++        format!(
++            "is_active: {}, is_recording: {}, pressed_keys: {:?}, trigger_mode: {:?}, dictation_hotkey: {}, assistant_hotkey: {}",
++            self.is_active.load(Ordering::Relaxed),
++            s.is_recording,
++            s.pressed_keys,
++            s.current_trigger_mode,
++            dictation_cfg.format_display(),
++            assistant_cfg.format_display()
++        )
++    }
+ }
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 5db657e..05d48f2 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -1,10 +1,12 @@
+ // Prevents additional console window on Windows in release, DO NOT REMOVE!!
+ #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+ 
++mod assistant_processor;
+ mod audio_recorder;
+ mod audio_utils;
+ mod asr;
+ mod beep_player;
++mod clipboard_manager;
+ mod config;
+ mod hotkey_service;
+ mod llm_post_processor;
+@@ -16,10 +18,11 @@ mod text_inserter;
+ 
+ use audio_recorder::AudioRecorder;
+ use asr::{QwenASRClient, SenseVoiceClient, DoubaoASRClient, QwenRealtimeClient, DoubaoRealtimeClient, DoubaoRealtimeSession, RealtimeSession};
++use assistant_processor::AssistantProcessor;
+ use config::AppConfig;
+ use hotkey_service::HotkeyService;
+ use llm_post_processor::LlmPostProcessor;
+-use pipeline::{NormalPipeline, SmartCommandPipeline, TranscriptionContext};
++use pipeline::{AssistantPipeline, NormalPipeline, SmartCommandPipeline, TranscriptionContext};
+ use smart_command_processor::SmartCommandProcessor;
+ use streaming_recorder::StreamingRecorder;
+ use text_inserter::TextInserter;
+@@ -39,6 +42,8 @@ struct AppState {
+     text_inserter: Arc<Mutex<Option<TextInserter>>>,
+     post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
+     smart_command_processor: Arc<Mutex<Option<SmartCommandProcessor>>>,
++    /// AI 助手处理器（新增，支持双系统提示词）
++    assistant_processor: Arc<Mutex<Option<AssistantProcessor>>>,
+     is_running: Arc<Mutex<bool>>,
+     use_realtime_asr: Arc<Mutex<bool>>,
+     enable_post_process: Arc<Mutex<bool>>,
+@@ -56,6 +61,12 @@ struct AppState {
+     hotkey_service: Arc<HotkeyService>,
+     // 当前转录模式
+     transcription_mode: Arc<Mutex<config::TranscriptionMode>>,
++    /// 当前触发模式（听写/AI助手）
++    current_trigger_mode: Arc<Mutex<Option<config::TriggerMode>>>,
++    /// 剪贴板守卫（AI助手模式使用）
++    clipboard_guard: Arc<Mutex<Option<clipboard_manager::ClipboardGuard>>>,
++    /// 选中的文本（AI助手模式使用）
++    selected_text: Arc<Mutex<Option<String>>>,
+ }
+ 
+ // Tauri Commands
+@@ -71,6 +82,8 @@ async fn save_config(
+     close_action: Option<String>,
+     asr_config: Option<config::AsrConfig>,
+     hotkey_config: Option<config::HotkeyConfig>,
++    dual_hotkey_config: Option<config::DualHotkeyConfig>,
++    assistant_config: Option<config::AssistantConfig>,
+ ) -> Result<String, String> {
+     tracing::info!("保存配置...");
+     let has_fallback = !fallback_api_key.is_empty();
+@@ -100,8 +113,10 @@ async fn save_config(
+         enable_llm_post_process: enable_post_process.unwrap_or(false),
+         llm_config: llm_config.unwrap_or_default(),
+         smart_command_config: smart_command_config.unwrap_or_default(),
++        assistant_config: assistant_config.unwrap_or_default(),
+         close_action,
+-        hotkey_config: hotkey_config.unwrap_or_default(),
++        hotkey_config,
++        dual_hotkey_config: dual_hotkey_config.unwrap_or_default(),
+         transcription_mode: config::TranscriptionMode::default(),
+     };
+ 
+@@ -335,6 +350,8 @@ async fn start_app(
+     smart_command_config: Option<config::SmartCommandConfig>,
+     asr_config: Option<config::AsrConfig>,
+     hotkey_config: Option<config::HotkeyConfig>,
++    dual_hotkey_config: Option<config::DualHotkeyConfig>,
++    assistant_config: Option<config::AssistantConfig>,
+ ) -> Result<String, String> {
+     tracing::info!("启动应用...");
+ 
+@@ -491,6 +508,25 @@ async fn start_app(
+     }
+     tracing::info!("[DEBUG] Smart Command 处理器初始化完成");
+ 
++    // 初始化 AI 助手处理器（独立配置，支持双系统提示词）
++    tracing::info!("[DEBUG] 初始化 AI 助手处理器...");
++    {
++        let mut processor_guard = state.assistant_processor.lock().unwrap();
++        let assistant_cfg = assistant_config.unwrap_or_default();
++        tracing::info!("[DEBUG] AI 助手配置: enabled={}, api_key_len={}", assistant_cfg.enabled, assistant_cfg.api_key.len());
++        if assistant_cfg.enabled && assistant_cfg.is_valid() {
++            tracing::info!("AI 助手处理器配置: endpoint={}, model={}", assistant_cfg.endpoint, assistant_cfg.model);
++            *processor_guard = Some(AssistantProcessor::new(assistant_cfg));
++            tracing::info!("AI 助手处理器已初始化");
++        } else {
++            *processor_guard = None;
++            if assistant_cfg.enabled {
++                tracing::warn!("AI 助手已启用但配置不完整，将无法使用 AI 助手模式");
++            }
++        }
++    }
++    tracing::info!("[DEBUG] AI 助手处理器初始化完成");
++
+     // 初始化文本插入器
+     tracing::info!("[DEBUG] 初始化文本插入器...");
+     let text_inserter = TextInserter::new()
+@@ -512,19 +548,19 @@ async fn start_app(
+         *state.audio_recorder.lock().unwrap() = Some(audio_recorder);
+     }
+ 
+-    // 启动全局快捷键监听
++    // 启动全局快捷键监听（双模式支持）
+     tracing::info!("[DEBUG] 准备热键配置...");
+-    let hotkey_cfg = hotkey_config.unwrap_or_default();
++    let dual_hotkey_cfg = dual_hotkey_config.unwrap_or_default();
+ 
+     // 验证热键配置
+     tracing::info!("[DEBUG] 验证热键配置...");
+-    hotkey_cfg.validate()
++    dual_hotkey_cfg.validate()
+         .map_err(|e| format!("热键配置无效: {}", e))?;
+     tracing::info!("[DEBUG] 热键配置验证通过");
+ 
+     let hotkey_service = Arc::clone(&state.hotkey_service);
+ 
+-    // 克隆状态用于回调
++    // 克隆状态用于回调（听写模式）
+     let app_handle_start = app_handle.clone();
+     let audio_recorder_start = Arc::clone(&state.audio_recorder);
+     let streaming_recorder_start = Arc::clone(&state.streaming_recorder);
+@@ -535,6 +571,10 @@ async fn start_app(
+     let use_realtime_start = use_realtime_mode;
+     let api_key_start = api_key.clone();
+     let is_running_start = Arc::clone(&state.is_running);
++    // AI 助手模式专用
++    let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
++    let clipboard_guard_start = Arc::clone(&state.clipboard_guard);
++    let selected_text_start = Arc::clone(&state.selected_text);
+ 
+     // 保存当前的 provider 配置和凭证
+     let (provider_type, doubao_app_id, doubao_access_token) = if let Some(ref cfg) = asr_config {
+@@ -557,6 +597,7 @@ async fn start_app(
+     let audio_sender_handle_stop = Arc::clone(&state.audio_sender_handle);
+     let post_processor_stop = Arc::clone(&state.post_processor);
+     let smart_command_processor_stop = Arc::clone(&state.smart_command_processor);
++    let assistant_processor_stop = Arc::clone(&state.assistant_processor);
+     let text_inserter_stop = Arc::clone(&state.text_inserter);
+     let qwen_client_stop = Arc::clone(&state.qwen_client);
+     let sensevoice_client_stop = Arc::clone(&state.sensevoice_client);
+@@ -567,14 +608,43 @@ async fn start_app(
+     let is_running_stop = Arc::clone(&state.is_running);
+     let enable_fallback_stop = Arc::clone(&state.enable_fallback);
+     let transcription_mode_stop = Arc::clone(&state.transcription_mode);
++    // AI 助手模式专用
++    let current_trigger_mode_stop = Arc::clone(&state.current_trigger_mode);
++    let clipboard_guard_stop = Arc::clone(&state.clipboard_guard);
++    let selected_text_stop = Arc::clone(&state.selected_text);
+ 
+-    // 按键按下回调
+-    let on_start = move || {
++    // 按键按下回调（支持双模式）
++    let on_start = move |trigger_mode: config::TriggerMode| {
+         if !*is_running_start.lock().unwrap() {
+             tracing::debug!("服务已停止，忽略快捷键按下事件");
+             return;
+         }
+ 
++        // 保存当前触发模式
++        *current_trigger_mode_start.lock().unwrap() = Some(trigger_mode);
++        tracing::info!("触发模式: {:?}", trigger_mode);
++
++        // AI 助手模式：先捕获选中文本
++        if trigger_mode == config::TriggerMode::AiAssistant {
++            tracing::info!("AI 助手模式：尝试捕获选中文本...");
++            match clipboard_manager::get_selected_text() {
++                Ok((guard, selected_text)) => {
++                    if let Some(ref text) = selected_text {
++                        tracing::info!("已捕获选中文本: {} 字符", text.len());
++                    } else {
++                        tracing::info!("无选中文本，使用问答模式");
++                    }
++                    *clipboard_guard_start.lock().unwrap() = Some(guard);
++                    *selected_text_start.lock().unwrap() = selected_text;
++                }
++                Err(e) => {
++                    tracing::warn!("捕获选中文本失败: {}，继续录音但无上下文", e);
++                    *clipboard_guard_start.lock().unwrap() = None;
++                    *selected_text_start.lock().unwrap() = None;
++                }
++            }
++        }
++
+         beep_player::play_start_beep();
+ 
+         let app = app_handle_start.clone();
+@@ -606,14 +676,16 @@ async fn start_app(
+         });
+     };
+ 
+-    // 按键释放回调
+-    let on_stop = move || {
++    // 按键释放回调（支持双模式）
++    let on_stop = move |trigger_mode: config::TriggerMode| {
+         // 检查服务是否仍在运行
+         if !*is_running_stop.lock().unwrap() {
+             tracing::debug!("服务已停止，忽略快捷键释放事件");
+             return;
+         }
+ 
++        tracing::info!("检测到快捷键释放，模式: {:?}", trigger_mode);
++
+         let app = app_handle_stop.clone();
+         let recorder = Arc::clone(&audio_recorder_stop);
+         let streaming_recorder = Arc::clone(&streaming_recorder_stop);
+@@ -626,58 +698,88 @@ async fn start_app(
+         let realtime_provider_state = Arc::clone(&realtime_provider_stop);
+         let enable_fallback_state = Arc::clone(&enable_fallback_stop);
+         let use_realtime = use_realtime_stop;
+-        // Processor 相关 (无状态 Pipeline, 传入 processor)
++
++        // 根据触发模式选择处理器
+         let post_processor = Arc::clone(&post_processor_stop);
+         let smart_command_processor = Arc::clone(&smart_command_processor_stop);
++        let assistant_processor = Arc::clone(&assistant_processor_stop);
+         let text_inserter = Arc::clone(&text_inserter_stop);
+         let transcription_mode = *transcription_mode_stop.lock().unwrap();
+ 
++        // AI 助手模式专用状态
++        let clipboard_guard = clipboard_guard_stop.lock().unwrap().take();
++        let selected_text = selected_text_stop.lock().unwrap().take();
++
+         // 播放停止录音提示音
+         beep_player::play_stop_beep();
+ 
+         tauri::async_runtime::spawn(async move {
+-            tracing::info!("检测到快捷键释放");
+             let _ = app.emit("recording_stopped", ());
+ 
+-            if use_realtime {
+-                // 实时模式：停止录音 + commit + 等待结果
+-                handle_realtime_stop(
+-                    app,
+-                    streaming_recorder,
+-                    active_session,
+-                    doubao_session_state,
+-                    realtime_provider_state,
+-                    audio_sender_handle,
+-                    post_processor,
+-                    smart_command_processor,
+-                    text_inserter,
+-                    transcription_mode,
+-                    qwen_client_state,
+-                    sensevoice_client_state,
+-                    doubao_client_state,
+-                    enable_fallback_state,
+-                ).await;
+-            } else {
+-                // HTTP 模式：使用原有逻辑
+-                handle_http_transcription(
+-                    app,
+-                    recorder,
+-                    post_processor,
+-                    smart_command_processor,
+-                    text_inserter,
+-                    transcription_mode,
+-                    qwen_client_state,
+-                    sensevoice_client_state,
+-                    doubao_client_state,
+-                    enable_fallback_state,
+-                ).await;
++            match trigger_mode {
++                config::TriggerMode::Dictation => {
++                    // 听写模式：使用原有的转录逻辑
++                    tracing::info!("使用听写模式处理");
++                    if use_realtime {
++                        handle_realtime_stop(
++                            app,
++                            streaming_recorder,
++                            active_session,
++                            doubao_session_state,
++                            realtime_provider_state,
++                            audio_sender_handle,
++                            post_processor,
++                            smart_command_processor,
++                            text_inserter,
++                            transcription_mode,
++                            qwen_client_state,
++                            sensevoice_client_state,
++                            doubao_client_state,
++                            enable_fallback_state,
++                        ).await;
++                    } else {
++                        handle_http_transcription(
++                            app,
++                            recorder,
++                            post_processor,
++                            smart_command_processor,
++                            text_inserter,
++                            transcription_mode,
++                            qwen_client_state,
++                            sensevoice_client_state,
++                            doubao_client_state,
++                            enable_fallback_state,
++                        ).await;
++                    }
++                }
++                config::TriggerMode::AiAssistant => {
++                    // AI 助手模式：使用 AssistantPipeline
++                    tracing::info!("使用 AI 助手模式处理");
++                    handle_assistant_mode(
++                        app,
++                        recorder,
++                        streaming_recorder,
++                        active_session,
++                        doubao_session_state,
++                        realtime_provider_state,
++                        audio_sender_handle,
++                        assistant_processor,
++                        clipboard_guard,
++                        selected_text,
++                        qwen_client_state,
++                        sensevoice_client_state,
++                        doubao_client_state,
++                        enable_fallback_state,
++                        use_realtime,
++                    ).await;
++                }
+             }
+         });
+     };
+ 
+     tracing::info!("[DEBUG] 准备激活热键服务...");
+     hotkey_service
+-        .activate(hotkey_cfg.clone(), on_start, on_stop)
++        .activate_dual(dual_hotkey_cfg.clone(), on_start, on_stop)
+         .map_err(|e| format!("启动快捷键监听失败: {}", e))?;
+     tracing::info!("[DEBUG] 热键服务已激活");
+ 
+@@ -685,8 +787,217 @@ async fn start_app(
+     *state.is_running.lock().unwrap() = true;
+     tracing::info!("[DEBUG] 启动完成!");
+     let mode_str = if use_realtime_mode { "实时模式" } else { "HTTP 模式" };
+-    let hotkey_display = hotkey_cfg.format_display();
+-    Ok(format!("应用已启动 ({})，按 {} 开始录音", mode_str, hotkey_display))
++    let dictation_display = dual_hotkey_cfg.dictation.format_display();
++    let assistant_display = dual_hotkey_cfg.assistant.format_display();
++    Ok(format!(
++        "应用已启动 ({})，听写: {}，AI助手: {}",
++        mode_str, dictation_display, assistant_display
++    ))
++}
++
++/// AI 助手模式处理
++///
++/// 使用 AssistantPipeline 进行上下文感知的 LLM 处理
++async fn handle_assistant_mode(
++    app: AppHandle,
++    recorder: Arc<Mutex<Option<AudioRecorder>>>,
++    streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
++    active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
++    doubao_session: Arc<tokio::sync::Mutex<Option<DoubaoRealtimeSession>>>,
++    realtime_provider: Arc<Mutex<Option<config::AsrProvider>>>,
++    audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
++    assistant_processor: Arc<Mutex<Option<AssistantProcessor>>>,
++    clipboard_guard: Option<clipboard_manager::ClipboardGuard>,
++    selected_text: Option<String>,
++    qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
++    sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
++    doubao_client_state: Arc<Mutex<Option<DoubaoASRClient>>>,
++    enable_fallback_state: Arc<Mutex<bool>>,
++    use_realtime: bool,
++) {
++    let _ = app.emit("transcribing", ());
++    let asr_start = std::time::Instant::now();
++
++    // 1. 停止录音并获取音频数据
++    let (asr_result, audio_data) = if use_realtime {
++        // 实时模式：先停止流式录音
++        let audio_data = {
++            let mut recorder_guard = streaming_recorder.lock().unwrap();
++            if let Some(ref mut rec) = *recorder_guard {
++                match rec.stop_streaming() {
++                    Ok(data) => Some(data),
++                    Err(e) => {
++                        tracing::error!("停止流式录音失败: {}", e);
++                        None
++                    }
++                }
++            } else {
++                None
++            }
++        };
++
++        // 等待音频发送任务完成
++        {
++            let handle = audio_sender_handle.lock().unwrap().take();
++            if let Some(h) = handle {
++                tracing::info!("等待音频发送任务完成...");
++                let _ = h.await;
++            }
++        }
++
++        // 获取实时转录结果
++        let provider = realtime_provider.lock().unwrap().clone();
++        let result = match provider {
++            Some(config::AsrProvider::Doubao) => {
++                let mut session_guard = doubao_session.lock().await;
++                if let Some(ref mut session) = *session_guard {
++                    let _ = session.finish_audio().await;
++                    let res = session.wait_for_result().await;
++                    drop(session_guard);
++                    *doubao_session.lock().await = None;
++                    res
++                } else {
++                    Err(anyhow::anyhow!("没有活跃的豆包会话"))
++                }
++            }
++            _ => {
++                let mut session_guard = active_session.lock().await;
++                if let Some(ref mut session) = *session_guard {
++                    let _ = session.commit_audio().await;
++                    let res = session.wait_for_result().await;
++                    let _ = session.close().await;
++                    drop(session_guard);
++                    *active_session.lock().await = None;
++                    res
++                } else {
++                    Err(anyhow::anyhow!("没有活跃的千问会话"))
++                }
++            }
++        };
++
++        (result, audio_data)
++    } else {
++        // HTTP 模式：停止录音并获取数据
++        let audio_data = {
++            let mut recorder_guard = recorder.lock().unwrap();
++            if let Some(ref mut rec) = *recorder_guard {
++                match rec.stop_recording_to_memory() {
++                    Ok(data) => Some(data),
++                    Err(e) => {
++                        emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
++                        None
++                    }
++                }
++            } else {
++                None
++            }
++        };
++
++        let result = if let Some(ref data) = audio_data {
++            // 使用 HTTP ASR
++            let enable_fb = *enable_fallback_state.lock().unwrap();
++            let qwen = { qwen_client_state.lock().unwrap().clone() };
++            let doubao = { doubao_client_state.lock().unwrap().clone() };
++            let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
++
++            if enable_fb {
++                match (qwen, doubao, sensevoice) {
++                    (Some(q), _, Some(s)) => asr::transcribe_with_fallback_clients(q, s, data.clone()).await,
++                    (_, Some(d), Some(s)) => asr::transcribe_doubao_sensevoice_race(d, s, data.clone()).await,
++                    (Some(q), _, _) => q.transcribe_bytes(data).await,
++                    (_, Some(d), _) => d.transcribe_bytes(data).await,
++                    (_, _, Some(s)) => s.transcribe_bytes(data).await,
++                    _ => Err(anyhow::anyhow!("ASR 客户端未初始化")),
++                }
++            } else {
++                if let Some(d) = doubao {
++                    d.transcribe_bytes(data).await
++                } else if let Some(q) = qwen {
++                    q.transcribe_bytes(data).await
++                } else if let Some(s) = sensevoice {
++                    s.transcribe_bytes(data).await
++                } else {
++                    Err(anyhow::anyhow!("ASR 客户端未初始化"))
++                }
++            }
++        } else {
++            Err(anyhow::anyhow!("未获取到音频数据"))
++        };
++
++        (result, audio_data)
++    };
++
++    let asr_time_ms = asr_start.elapsed().as_millis() as u64;
++
++    // 2. 如果实时模式失败且有音频数据，尝试 HTTP 备用
++    let final_result = if asr_result.is_err() && audio_data.is_some() {
++        tracing::warn!("实时 ASR 失败，尝试 HTTP 备用");
++        let data = audio_data.unwrap();
++        let enable_fb = *enable_fallback_state.lock().unwrap();
++        let qwen = { qwen_client_state.lock().unwrap().clone() };
++        let doubao = { doubao_client_state.lock().unwrap().clone() };
++        let sensevoice = { sensevoice_client_state.lock().unwrap().clone() };
++
++        if enable_fb {
++            match (qwen, doubao, sensevoice) {
++                (Some(q), _, Some(s)) => asr::transcribe_with_fallback_clients(q, s, data).await,
++                (_, Some(d), Some(s)) => asr::transcribe_doubao_sensevoice_race(d, s, data).await,
++                (Some(q), _, _) => q.transcribe_bytes(&data).await,
++                (_, Some(d), _) => d.transcribe_bytes(&data).await,
++                (_, _, Some(s)) => s.transcribe_bytes(&data).await,
++                _ => asr_result,
++            }
++        } else {
++            if let Some(d) = doubao {
++                d.transcribe_bytes(&data).await
++            } else if let Some(q) = qwen {
++                q.transcribe_bytes(&data).await
++            } else if let Some(s) = sensevoice {
++                s.transcribe_bytes(&data).await
++            } else {
++                asr_result
++            }
++        }
++    } else {
++        asr_result
++    };
++
++    // 3. 使用 AssistantPipeline 处理
++    let processor = { assistant_processor.lock().unwrap().clone() };
++    let pipeline = AssistantPipeline::new();
++
++    let context = TranscriptionContext {
++        selected_text,
++        ..Default::default()
++    };
++
++    let pipeline_result = pipeline
++        .process(&app, processor, clipboard_guard, final_result, asr_time_ms, context)
++        .await;
++
++    // 4. 处理结果
++    match pipeline_result {
++        Ok(result) => {
++            hide_overlay_window(&app).await;
++
++            let transcription_result = TranscriptionResult {
++                text: result.text,
++                original_text: result.original_text,
++                asr_time_ms: result.asr_time_ms,
++                llm_time_ms: result.llm_time_ms,
++                total_time_ms: result.total_time_ms,
++                mode: Some(format!("{:?}", result.mode).to_lowercase()),
++                inserted: Some(result.inserted),
++            };
++
++            let _ = app.emit("transcription_complete", transcription_result);
++        }
++        Err(e) => {
++            hide_overlay_window(&app).await;
++            tracing::error!("AI 助手处理失败: {}", e);
++            let _ = app.emit("error", format!("AI 助手处理失败: {}", e));
++        }
++    }
+ }
+ 
+ /// HTTP 模式转录处理（原有逻辑）
+@@ -1577,6 +1888,21 @@ async fn get_autostart(app: AppHandle) -> Result<bool, String> {
+     app.autolaunch().is_enabled().map_err(|e| e.to_string())
+ }
+ 
++/// 重置热键状态（用于手动修复状态卡死问题）
++#[tauri::command]
++async fn reset_hotkey_state(app_handle: AppHandle) -> Result<String, String> {
++    let state = app_handle.state::<AppState>();
++    state.hotkey_service.reset_state();
++    Ok("热键状态已重置".to_string())
++}
++
++/// 获取热键调试信息
++#[tauri::command]
++async fn get_hotkey_debug_info(app_handle: AppHandle) -> Result<String, String> {
++    let state = app_handle.state::<AppState>();
++    Ok(state.hotkey_service.get_debug_info())
++}
++
+ #[cfg_attr(mobile, tauri::mobile_entry_point)]
+ pub fn run() {
+     // 初始化日志
+@@ -1609,6 +1935,7 @@ pub fn run() {
+                 text_inserter: Arc::new(Mutex::new(None)),
+                 post_processor: Arc::new(Mutex::new(None)),
+                 smart_command_processor: Arc::new(Mutex::new(None)),
++                assistant_processor: Arc::new(Mutex::new(None)),
+                 is_running: Arc::new(Mutex::new(false)),
+                 use_realtime_asr: Arc::new(Mutex::new(true)),
+                 enable_post_process: Arc::new(Mutex::new(false)),
+@@ -1622,6 +1949,9 @@ pub fn run() {
+                 audio_sender_handle: Arc::new(Mutex::new(None)),
+                 hotkey_service: Arc::new(HotkeyService::new()),
+                 transcription_mode: Arc::new(Mutex::new(config::TranscriptionMode::default())),
++                current_trigger_mode: Arc::new(Mutex::new(None)),
++                clipboard_guard: Arc::new(Mutex::new(None)),
++                selected_text: Arc::new(Mutex::new(None)),
+             };
+             app.manage(app_state);
+ 
+@@ -1679,6 +2009,8 @@ pub fn run() {
+             hide_overlay,
+             set_autostart,
+             get_autostart,
++            reset_hotkey_state,
++            get_hotkey_debug_info,
+         ])
+         .run(tauri::generate_context!())
+         .expect("error while running tauri application");
+diff --git a/src-tauri/src/pipeline/assistant.rs b/src-tauri/src/pipeline/assistant.rs
+new file mode 100644
+index 0000000..996249b
+--- /dev/null
++++ b/src-tauri/src/pipeline/assistant.rs
+@@ -0,0 +1,138 @@
++// AI 助手模式处理管道
++//
++// 处理流程：
++// 1. 如果有选中文本：上下文 + 语音指令 → ASR → AssistantProcessor (文本处理模式) → 自动插入（替换选中）
++// 2. 如果无选中文本：语音指令 → ASR → AssistantProcessor (问答模式) → 自动插入
++//
++// 使用独立的 AssistantProcessor，支持双系统提示词
++
++use anyhow::Result;
++use std::time::Instant;
++use tauri::{AppHandle, Emitter};
++
++use crate::assistant_processor::AssistantProcessor;
++use crate::clipboard_manager::{ClipboardGuard, insert_text_with_context};
++use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
++
++/// AI 助手模式处理管道
++///
++/// 职责：
++/// 1. 接收 ASR 转写的用户指令
++/// 2. 根据是否有选中文本选择合适的系统提示词
++/// 3. 调用 AssistantProcessor 进行处理
++/// 4. 将回答自动插入到当前光标位置（替换选中或插入）
++/// 5. 恢复原始剪贴板
++pub struct AssistantPipeline;
++
++impl AssistantPipeline {
++    /// 创建 AI 助手模式管道
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// 处理 ASR 结果
++    ///
++    /// # Arguments
++    /// * `app` - Tauri 应用句柄（用于发送事件）
++    /// * `processor` - AI 助手处理器（调用方负责从锁中获取）
++    /// * `clipboard_guard` - 剪贴板守卫（用于恢复）
++    /// * `asr_result` - ASR 转录结果（用户的语音指令）
++    /// * `asr_time_ms` - ASR 耗时（毫秒）
++    /// * `context` - 上下文信息（包含选中文本）
++    ///
++    /// # Returns
++    /// * `Ok(PipelineResult)` - 处理成功
++    /// * `Err(e)` - 处理失败
++    pub async fn process(
++        &self,
++        app: &AppHandle,
++        processor: Option<AssistantProcessor>,
++        clipboard_guard: Option<ClipboardGuard>,
++        asr_result: Result<String>,
++        asr_time_ms: u64,
++        context: TranscriptionContext,
++    ) -> Result<PipelineResult> {
++        // 1. 解包 ASR 结果（用户指令）
++        let user_instruction = asr_result?;
++        tracing::info!(
++            "AssistantPipeline: 收到用户指令: {} (ASR耗时: {}ms)",
++            user_instruction,
++            asr_time_ms
++        );
++
++        // 2. 检查 AssistantProcessor 是否可用
++        let Some(processor) = processor else {
++            anyhow::bail!("AI 助手模式需要配置 LLM，请先在设置中配置 AI 助手 API");
++        };
++
++        // 3. 发送处理中事件
++        let _ = app.emit("post_processing", ());
++        let llm_start = Instant::now();
++
++        // 4. 根据是否有选中文本选择处理方式
++        let result = if let Some(ref selected_text) = context.selected_text {
++            // 有选中文本：使用文本处理模式
++            tracing::info!(
++                "AssistantPipeline: 文本处理模式 (选中文本: {} 字符)",
++                selected_text.len()
++            );
++            processor.process_with_context(&user_instruction, selected_text).await?
++        } else {
++            // 无选中文本：使用问答模式
++            tracing::info!("AssistantPipeline: 问答模式");
++            processor.process(&user_instruction).await?
++        };
++
++        let llm_time_ms = llm_start.elapsed().as_millis() as u64;
++        tracing::info!(
++            "AssistantPipeline: LLM 回答: {} (LLM耗时: {}ms)",
++            result,
++            llm_time_ms
++        );
++
++        // 5. 插入结果（替换选中或插入at 光标）
++        let has_selection = context.selected_text.is_some();
++        let inserted = Self::insert_result(&result, has_selection, clipboard_guard);
++
++        // 6. 返回结果
++        Ok(PipelineResult::success(
++            result,
++            Some(user_instruction),
++            asr_time_ms,
++            Some(llm_time_ms),
++            TranscriptionMode::SmartCommand, // 复用现有模式
++            inserted,
++        ))
++    }
++
++    /// 插入文本到当前光标位置
++    fn insert_result(text: &str, has_selection: bool, guard: Option<ClipboardGuard>) -> bool {
++        match insert_text_with_context(text, has_selection, guard) {
++            Ok(()) => {
++                tracing::info!("AssistantPipeline: 结果已插入");
++                true
++            }
++            Err(e) => {
++                tracing::error!("AssistantPipeline: 插入失败: {}", e);
++                false
++            }
++        }
++    }
++}
++
++impl Default for AssistantPipeline {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_pipeline_creation() {
++        let _pipeline = AssistantPipeline::new();
++        // Pipeline 是无状态的，只需要能创建即可
++    }
++}
+diff --git a/src-tauri/src/pipeline/mod.rs b/src-tauri/src/pipeline/mod.rs
+index 78d5dda..2b7c344 100644
+--- a/src-tauri/src/pipeline/mod.rs
++++ b/src-tauri/src/pipeline/mod.rs
+@@ -3,12 +3,15 @@
+ // 支持多种处理模式：
+ // - Normal: 普通模式（ASR → 可选LLM润色 → 自动插入）
+ // - SmartCommand: 智能指令模式（上下文 + ASR → LLM理解 → 显示结果）
++// - Assistant: AI 助手模式（双系统提示词，上下文感知）
+ // - 未来可扩展更多模式...
+ 
+ mod types;
+ mod normal;
+ mod smart_command;
++mod assistant;
+ 
+ pub use types::*;
+ pub use normal::NormalPipeline;
+ pub use smart_command::SmartCommandPipeline;
++pub use assistant::AssistantPipeline;
+diff --git a/src/App.tsx b/src/App.tsx
+index 4316c19..c35e6ac 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -56,6 +56,12 @@ interface HotkeyConfig {
+   keys: HotkeyKey[];
+ }
+ 
++// 双热键配置（听写模式 + AI助手模式）
++interface DualHotkeyConfig {
++  dictation: HotkeyConfig;  // 听写模式（默认 Ctrl+Win）
++  assistant: HotkeyConfig;  // AI助手模式（默认 Alt+Space）
++}
++
+ // 按键显示名称映射
+ const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
+   control_left: 'Ctrl', control_right: 'Ctrl(右)',
+@@ -115,6 +121,16 @@ interface SmartCommandConfig {
+   system_prompt: string;
+ }
+ 
++// AI 助手配置（双系统提示词）
++interface AssistantConfig {
++  enabled: boolean;
++  endpoint: string;
++  model: string;
++  api_key: string;
++  qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
++  text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
++}
++
+ interface AppConfig {
+   dashscope_api_key: string;
+   siliconflow_api_key: string;
+@@ -123,8 +139,10 @@ interface AppConfig {
+   enable_llm_post_process: boolean;
+   llm_config: LlmConfig;
+   smart_command_config: SmartCommandConfig;
++  assistant_config: AssistantConfig;      // 新增：AI 助手配置
+   close_action: "close" | "minimize" | null;
+-  hotkey_config: HotkeyConfig;
++  hotkey_config: HotkeyConfig;            // 保留用于迁移
++  dual_hotkey_config: DualHotkeyConfig;   // 新增：双热键配置
+ }
+ 
+ interface TranscriptionResult {
+@@ -214,6 +232,34 @@ const DEFAULT_SMART_COMMAND_CONFIG: SmartCommandConfig = {
+ - 如果是代码相关问题，直接给出代码`
+ };
+ 
++// AI 助手默认配置
++const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
++  enabled: false,
++  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
++  model: "glm-4-flash-250414",
++  api_key: "",
++  qa_system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
++1. 理解用户的问题
++2. 给出简洁、准确、有用的回答
++3. 如果问题不够明确，给出最可能的解答
++
++注意：
++- 回答要简洁明了，适合直接粘贴使用
++- 避免过多的解释和废话
++- 如果是代码相关问题，直接给出代码`,
++  text_processing_system_prompt: `你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
++
++你的任务：
++1. 理解用户的语音指令
++2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
++3. 直接输出处理后的文本
++
++注意：
++- 只输出处理后的结果，不要输出任何解释
++- 保持原文的格式和结构（除非用户要求改变）
++- 如果指令不明确，按最合理的方式处理`
++};
++
+ // ASR 服务商元数据
+ const ASR_PROVIDERS: Record<AsrProvider, { name: string; model: string; docsUrl: string }> = {
+   qwen: {
+@@ -306,7 +352,13 @@ function App() {
+   const [showUpdateModal, setShowUpdateModal] = useState(false);
+   const [showSettingsModal, setShowSettingsModal] = useState(false);
+   const [hotkeyConfig, setHotkeyConfig] = useState<HotkeyConfig>({ keys: ['control_left', 'meta_left'] });
++  const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>({
++    dictation: { keys: ['control_left', 'meta_left'] },
++    assistant: { keys: ['alt_left', 'space'] }
++  });
++  const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
+   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
++  const [recordingMode, setRecordingMode] = useState<'dictation' | 'assistant'>('dictation'); // 当前录制模式
+   const [recordingKeys, setRecordingKeys] = useState<HotkeyKey[]>([]); // 录制时实时显示的按键
+   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+   const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
+@@ -397,8 +449,17 @@ function App() {
+         console.log("是否包含修饰键:", hasModifier, "是否为功能键:", isFunctionKey);
+ 
+         if (hasModifier || isFunctionKey) {
+-          setHotkeyConfig({ keys: keysArray });
++          // 根据录制模式更新对应的热键配置
++          const newDualHotkeyConfig = { ...dualHotkeyConfig };
++          if (recordingMode === 'dictation') {
++            newDualHotkeyConfig.dictation = { keys: keysArray };
++            setHotkeyConfig({ keys: keysArray }); // 保持兼容性
++          } else {
++            newDualHotkeyConfig.assistant = { keys: keysArray };
++          }
++          setDualHotkeyConfig(newDualHotkeyConfig);
+           setHotkeyError(null);
++
+           // 保存配置
+           invoke<string>("save_config", {
+             apiKey,
+@@ -406,10 +467,12 @@ function App() {
+             useRealtime,
+             enablePostProcess,
+             llmConfig,
++            smartCommandConfig,
++            assistantConfig,
+             asrConfig,
+-            hotkeyConfig: { keys: keysArray }
++            dualHotkeyConfig: newDualHotkeyConfig
+           }).then(() => {
+-            console.log("热键配置已保存:", keysArray);
++            console.log(`${recordingMode === 'dictation' ? '听写' : 'AI助手'}模式热键配置已保存:`, keysArray);
+           }).catch(err => {
+             console.error("保存热键配置失败:", err);
+           });
+@@ -499,8 +562,24 @@ function App() {
+         setSmartCommandConfig(config.smart_command_config);
+       }
+ 
+-      // 加载热键配置
+-      if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
++      // 加载 AI 助手配置
++      if (config.assistant_config) {
++        setAssistantConfig(config.assistant_config);
++      } else {
++        setAssistantConfig(DEFAULT_ASSISTANT_CONFIG);
++      }
++
++      // 加载双热键配置（优先使用 dual_hotkey_config，向后兼容 hotkey_config）
++      if (config.dual_hotkey_config) {
++        setDualHotkeyConfig(config.dual_hotkey_config);
++        // 同时更新旧的 hotkeyConfig 用于保持兼容性
++        setHotkeyConfig(config.dual_hotkey_config.dictation);
++      } else if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
++        // 如果只有旧的 hotkey_config，则迁移到 dual_hotkey_config
++        setDualHotkeyConfig({
++          dictation: config.hotkey_config,
++          assistant: { keys: ['alt_left', 'space'] }
++        });
+         setHotkeyConfig(config.hotkey_config);
+       }
+ 
+@@ -517,26 +596,57 @@ function App() {
+         console.error("获取开机自启状态失败:", err);
+       }
+ 
+-      // 自动启动时也需要传递 asrConfig 和 hotkeyConfig
++      // 自动启动时也需要传递 asrConfig、dualHotkeyConfig 和 assistantConfig
+       const loadedAsrConfig = config.asr_config || null;
+-      const loadedHotkeyConfig = config.hotkey_config && config.hotkey_config.keys.length > 0
+-        ? config.hotkey_config
+-        : { keys: ['control_left', 'meta_left'] as HotkeyKey[] };
+-
++      const loadedDualHotkeyConfig = config.dual_hotkey_config || {
++        dictation: config.hotkey_config || { keys: ['control_left', 'meta_left'] as HotkeyKey[] },
++        assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] }
++      };
+       const loadedSmartCommandConfig = config.smart_command_config || DEFAULT_SMART_COMMAND_CONFIG;
++      const loadedAssistantConfig = config.assistant_config || DEFAULT_ASSISTANT_CONFIG;
+ 
+       if (loadedAsrConfig && isAsrConfigValid(loadedAsrConfig.primary)) {
+-        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, loadedLlmConfig, loadedSmartCommandConfig, loadedAsrConfig, loadedHotkeyConfig);
++        autoStartApp(
++          config.dashscope_api_key,
++          config.siliconflow_api_key || "",
++          config.use_realtime_asr ?? true,
++          config.enable_llm_post_process ?? false,
++          loadedLlmConfig,
++          loadedSmartCommandConfig,
++          loadedAssistantConfig,
++          loadedAsrConfig,
++          loadedDualHotkeyConfig
++        );
+       }
+     } catch (err) {
+       console.error("加载配置失败:", err);
+     }
+   };
+ 
+-  const autoStartApp = async (apiKey: string, fallbackApiKey: string, useRealtimeMode: boolean, enablePostProcessMode: boolean, llmCfg: LlmConfig, smartCmdCfg: SmartCommandConfig, asrCfg: AsrConfig | null, hotkeyCfg: HotkeyConfig) => {
++  const autoStartApp = async (
++    apiKey: string,
++    fallbackApiKey: string,
++    useRealtimeMode: boolean,
++    enablePostProcessMode: boolean,
++    llmCfg: LlmConfig,
++    smartCmdCfg: SmartCommandConfig,
++    assistantCfg: AssistantConfig,
++    asrCfg: AsrConfig | null,
++    dualHotkeyCfg: DualHotkeyConfig
++  ) => {
+     try {
+       await new Promise(resolve => setTimeout(resolve, 100));
+-      await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime: useRealtimeMode, enablePostProcess: enablePostProcessMode, llmConfig: llmCfg, smartCommandConfig: smartCmdCfg, asrConfig: asrCfg, hotkeyConfig: hotkeyCfg });
++      await invoke<string>("start_app", {
++        apiKey,
++        fallbackApiKey,
++        useRealtime: useRealtimeMode,
++        enablePostProcess: enablePostProcessMode,
++        llmConfig: llmCfg,
++        smartCommandConfig: smartCmdCfg,
++        assistantConfig: assistantCfg,
++        asrConfig: asrCfg,
++        dualHotkeyConfig: dualHotkeyCfg
++      });
+       setStatus("running");
+       setError(null);
+     } catch (err) {
+@@ -653,8 +763,9 @@ function App() {
+         enablePostProcess,
+         llmConfig,
+         smartCommandConfig,
++        assistantConfig,
+         asrConfig,
+-        hotkeyConfig
++        dualHotkeyConfig
+       });
+       setError(null);
+       setShowSuccessToast(true);
+@@ -788,8 +899,29 @@ function App() {
+           setError("请先配置 ASR API Key");
+           return;
+         }
+-        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, smartCommandConfig, asrConfig, closeAction, hotkeyConfig });
+-        await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, smartCommandConfig, asrConfig, hotkeyConfig });
++        await invoke<string>("save_config", {
++          apiKey,
++          fallbackApiKey,
++          useRealtime,
++          enablePostProcess,
++          llmConfig,
++          smartCommandConfig,
++          assistantConfig,
++          asrConfig,
++          closeAction,
++          dualHotkeyConfig
++        });
++        await invoke<string>("start_app", {
++          apiKey,
++          fallbackApiKey,
++          useRealtime,
++          enablePostProcess,
++          llmConfig,
++          smartCommandConfig,
++          assistantConfig,
++          asrConfig,
++          dualHotkeyConfig
++        });
+         setStatus("running");
+         setError(null);
+       } else {
+@@ -819,9 +951,11 @@ function App() {
+           useRealtime,
+           enablePostProcess,
+           llmConfig,
++          smartCommandConfig,
++          assistantConfig,
+           asrConfig,
+           closeAction: action,
+-          hotkeyConfig,
++          dualHotkeyConfig,
+         });
+       } catch (err) {
+         console.error("保存关闭配置失败:", err);
+@@ -899,8 +1033,19 @@ function App() {
+     return config.keys.map(k => KEY_DISPLAY_NAMES[k] || k).join(' + ');
+   };
+ 
+-  const resetHotkeyToDefault = () => {
+-    setHotkeyConfig({ keys: ['control_left', 'meta_left'] });
++  const resetHotkeyToDefault = (mode: 'dictation' | 'assistant') => {
++    const defaultKeys = mode === 'dictation'
++      ? { keys: ['control_left', 'meta_left'] as HotkeyKey[] }
++      : { keys: ['alt_left', 'space'] as HotkeyKey[] };
++
++    const newDualConfig = { ...dualHotkeyConfig };
++    if (mode === 'dictation') {
++      newDualConfig.dictation = defaultKeys;
++      setHotkeyConfig(defaultKeys); // 保持兼容性
++    } else {
++      newDualConfig.assistant = defaultKeys;
++    }
++    setDualHotkeyConfig(newDualConfig);
+     handleSaveConfig();
+   };
+ 
+@@ -2195,7 +2340,7 @@ function App() {
+             {/* Modal Body */}
+             <div className="p-4 space-y-3">
+ 
+-              {/* 快捷键配置 */}
++              {/* 快捷键配置 - 双模式 */}
+               <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-100">
+                 <div className="flex items-center gap-3 mb-3">
+                   <div className={`p-2 rounded-lg transition-colors ${
+@@ -2204,49 +2349,105 @@ function App() {
+                     <Keyboard size={18} />
+                   </div>
+                   <div>
+-                    <div className="text-sm font-medium text-slate-700">快捷键</div>
++                    <div className="text-sm font-medium text-slate-700">快捷键（双模式）</div>
+                     <div className="text-xs text-slate-400">
+                       点击下方区域录制新的快捷键组合
+                     </div>
+                   </div>
+                 </div>
+ 
+-                <div
+-                  onClick={() => status === 'idle' && setIsRecordingHotkey(true)}
+-                  className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
+-                    isRecordingHotkey
+-                      ? 'border-blue-500 ring-2 ring-blue-200'
+-                      : 'border-slate-200 hover:border-slate-300'
+-                  } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
+-                >
+-                  <div className="flex-1 flex flex-wrap gap-1.5">
+-                    {isRecordingHotkey ? (
+-                      recordingKeys.length > 0 ? (
+-                        recordingKeys.map(key => (
+-                          <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
++                {/* 听写模式快捷键 */}
++                <div className="space-y-2 mb-3">
++                  <label className="text-xs font-medium text-slate-600">听写模式（语音转文字）</label>
++                  <div
++                    onClick={() => {
++                      if (status === 'idle') {
++                        setRecordingMode('dictation');
++                        setIsRecordingHotkey(true);
++                      }
++                    }}
++                    className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
++                      isRecordingHotkey && recordingMode === 'dictation'
++                        ? 'border-blue-500 ring-2 ring-blue-200'
++                        : 'border-slate-200 hover:border-slate-300'
++                    } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
++                  >
++                    <div className="flex-1 flex flex-wrap gap-1.5">
++                      {isRecordingHotkey && recordingMode === 'dictation' ? (
++                        recordingKeys.length > 0 ? (
++                          recordingKeys.map(key => (
++                            <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
++                              {KEY_DISPLAY_NAMES[key]}
++                            </span>
++                          ))
++                        ) : (
++                          <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
++                        )
++                      ) : (
++                        dualHotkeyConfig.dictation.keys.map(key => (
++                          <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
+                             {KEY_DISPLAY_NAMES[key]}
+                           </span>
+                         ))
+-                      ) : (
+-                        <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
+-                      )
+-                    ) : (
+-                      hotkeyConfig.keys.map(key => (
+-                        <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
+-                          {KEY_DISPLAY_NAMES[key]}
+-                        </span>
+-                      ))
+-                    )}
++                      )}
++                    </div>
++
++                    <button
++                      onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault('dictation'); }}
++                      disabled={status !== 'idle'}
++                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
++                      title="重置为默认 (Ctrl+Win)"
++                    >
++                      <RotateCcw size={14} />
++                    </button>
+                   </div>
++                </div>
+ 
+-                  <button
+-                    onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault(); }}
+-                    disabled={status !== 'idle'}
+-                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+-                    title="重置为默认 (Ctrl+Win)"
++                {/* AI 助手模式快捷键 */}
++                <div className="space-y-2">
++                  <label className="text-xs font-medium text-slate-600">AI 助手模式（智能处理）</label>
++                  <div
++                    onClick={() => {
++                      if (status === 'idle') {
++                        setRecordingMode('assistant');
++                        setIsRecordingHotkey(true);
++                      }
++                    }}
++                    className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
++                      isRecordingHotkey && recordingMode === 'assistant'
++                        ? 'border-blue-500 ring-2 ring-blue-200'
++                        : 'border-slate-200 hover:border-slate-300'
++                    } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                   >
+-                    <RotateCcw size={14} />
+-                  </button>
++                    <div className="flex-1 flex flex-wrap gap-1.5">
++                      {isRecordingHotkey && recordingMode === 'assistant' ? (
++                        recordingKeys.length > 0 ? (
++                          recordingKeys.map(key => (
++                            <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
++                              {KEY_DISPLAY_NAMES[key]}
++                            </span>
++                          ))
++                        ) : (
++                          <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
++                        )
++                      ) : (
++                        dualHotkeyConfig.assistant.keys.map(key => (
++                          <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
++                            {KEY_DISPLAY_NAMES[key]}
++                          </span>
++                        ))
++                      )}
++                    </div>
++
++                    <button
++                      onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault('assistant'); }}
++                      disabled={status !== 'idle'}
++                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
++                      title="重置为默认 (Alt+Space)"
++                    >
++                      <RotateCcw size={14} />
++                    </button>
++                  </div>
+                 </div>
+ 
+                 {hotkeyError && (
+
+=== END OF GIT DIFF CONTENT ===
+
+Please focus your answer on the logic changes, potential bugs, or improvements based on the diff above.

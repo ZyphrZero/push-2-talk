@@ -5,6 +5,106 @@ use std::path::PathBuf;
 use std::collections::HashSet;
 use anyhow::Result;
 
+// ============================================================================
+// 热键触发模式
+// ============================================================================
+
+/// 热键触发模式
+///
+/// 决定如何通过热键控制录音的开始和结束
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HotkeyMode {
+    /// 按住模式（默认）：按住快捷键开始录音，松开结束
+    #[default]
+    Press,
+    /// 切换模式：按一下开始录音，再按一下结束
+    Toggle,
+}
+
+impl HotkeyMode {
+    /// 获取显示名称
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            HotkeyMode::Press => "按住录音",
+            HotkeyMode::Toggle => "切换录音",
+        }
+    }
+}
+
+// ============================================================================
+// 转录处理模式
+// ============================================================================
+
+/// 转录处理模式
+///
+/// 决定 ASR 结果如何被后续处理
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionMode {
+    /// 普通模式：ASR → 可选LLM润色 → 自动插入文本
+    #[default]
+    Normal,
+    /// AI 助手模式：语音指令 → ASR → LLM处理 → 插入结果
+    Assistant,
+}
+
+// ============================================================================
+// 触发模式（新增）
+// ============================================================================
+
+/// 热键触发模式
+///
+/// 决定用户按下哪个快捷键，从而决定处理流程
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerMode {
+    /// 听写模式：语音 → ASR → 可选润色 → 插入文本
+    Dictation,
+    /// AI助手模式：(可选)选中文本 + 语音指令 → ASR → LLM处理 → 插入/替换文本
+    AiAssistant,
+}
+
+impl TriggerMode {
+    /// 获取显示名称
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TriggerMode::Dictation => "听写模式",
+            TriggerMode::AiAssistant => "AI助手模式",
+        }
+    }
+}
+
+impl TranscriptionMode {
+    /// 获取显示名称
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            TranscriptionMode::Normal => "普通模式",
+            TranscriptionMode::Assistant => "AI助手",
+        }
+    }
+
+    /// 该模式是否需要自动插入文本
+    pub fn should_auto_insert(&self) -> bool {
+        match self {
+            TranscriptionMode::Normal => true,
+            TranscriptionMode::Assistant => true,
+        }
+    }
+
+    /// 该模式是否必须使用 LLM 处理
+    pub fn requires_llm(&self) -> bool {
+        match self {
+            TranscriptionMode::Normal => false,
+            TranscriptionMode::Assistant => true,
+        }
+    }
+}
+
+// ============================================================================
+// 热键配置
+// ============================================================================
+
 /// 热键配置支持的按键类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +210,9 @@ impl HotkeyKey {
 pub struct HotkeyConfig {
     /// 需要同时按下的按键列表
     pub keys: Vec<HotkeyKey>,
+    /// 热键触发模式（默认为按住模式）
+    #[serde(default)]
+    pub mode: HotkeyMode,
 }
 
 impl Default for HotkeyConfig {
@@ -117,7 +220,85 @@ impl Default for HotkeyConfig {
         // 默认为 Ctrl+Win（向后兼容）
         Self {
             keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
+            mode: HotkeyMode::default(),
         }
+    }
+}
+
+// ============================================================================
+// 双快捷键配置（新增）
+// ============================================================================
+
+/// 双快捷键配置
+///
+/// 支持两个独立的快捷键，分别触发听写模式和AI助手模式
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DualHotkeyConfig {
+    /// 听写模式快捷键（默认 Ctrl+Win）
+    #[serde(default = "default_dictation_hotkey")]
+    pub dictation: HotkeyConfig,
+    /// AI助手模式快捷键（默认 Alt+Space）
+    #[serde(default = "default_assistant_hotkey")]
+    pub assistant: HotkeyConfig,
+}
+
+fn default_dictation_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        keys: vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft],
+        mode: HotkeyMode::Press,
+    }
+}
+
+fn default_assistant_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
+        mode: HotkeyMode::Press,
+    }
+}
+
+impl Default for DualHotkeyConfig {
+    fn default() -> Self {
+        Self {
+            dictation: default_dictation_hotkey(),
+            assistant: default_assistant_hotkey(),
+        }
+    }
+}
+
+impl DualHotkeyConfig {
+    /// 验证双快捷键配置
+    ///
+    /// 检查：
+    /// 1. 两个快捷键各自有效
+    /// 2. 两个快捷键不冲突（不完全相同）
+    /// 3. 两个快捷键不存在子集关系（避免按键冲突）
+    pub fn validate(&self) -> Result<()> {
+        // 验证各自配置
+        self.dictation.validate()
+            .map_err(|e| anyhow::anyhow!("听写模式快捷键配置无效: {}", e))?;
+        self.assistant.validate()
+            .map_err(|e| anyhow::anyhow!("AI助手模式快捷键配置无效: {}", e))?;
+
+        // 检查冲突：两个快捷键的按键集合不能完全相同
+        let dictation_set: HashSet<_> = self.dictation.keys.iter().collect();
+        let assistant_set: HashSet<_> = self.assistant.keys.iter().collect();
+
+        if dictation_set == assistant_set {
+            anyhow::bail!("听写模式和AI助手模式不能使用相同的快捷键");
+        }
+
+        // 检查子集关系：一组快捷键不能是另一组的子集
+        // 例如：听写 Ctrl+Space，助手 Ctrl+Shift+Space 会导致冲突
+        // 因为按下 Ctrl+Shift+Space 时必须先经过 Ctrl+Space 状态
+        if dictation_set.is_subset(&assistant_set) || assistant_set.is_subset(&dictation_set) {
+            anyhow::bail!(
+                "一组快捷键不能包含另一组快捷键（这会导致按键冲突）。\n\
+                 例如：Ctrl+Space 和 Ctrl+Shift+Space 会冲突，\n\
+                 因为按下后者时会先触发前者。"
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -218,12 +399,24 @@ pub struct AppConfig {
     pub enable_llm_post_process: bool,
     #[serde(default)]
     pub llm_config: LlmConfig,
+    /// Smart Command 独立配置（保留以便向后兼容）
+    #[serde(default)]
+    pub smart_command_config: SmartCommandConfig,
+    /// AI 助手配置（新增）
+    #[serde(default)]
+    pub assistant_config: AssistantConfig,
     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
     #[serde(default)]
     pub close_action: Option<String>,
-    /// 热键配置（默认 Ctrl+Win）
+    /// 热键配置（旧版，保留以便迁移）
+    #[serde(default, skip_serializing)]
+    pub hotkey_config: Option<HotkeyConfig>,
+    /// 双快捷键配置（新版）
     #[serde(default)]
-    pub hotkey_config: HotkeyConfig,
+    pub dual_hotkey_config: DualHotkeyConfig,
+    /// 转录处理模式（默认普通模式）
+    #[serde(default)]
+    pub transcription_mode: TranscriptionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +470,161 @@ fn default_active_preset_id() -> String {
     "polishing".to_string()
 }
 
+// ============================================================================
+// Smart Command 配置
+// ============================================================================
+
+/// Smart Command 默认系统提示词（问答模式）
+pub const DEFAULT_SMART_COMMAND_PROMPT: &str = r#"你是一个智能语音助手。用户会通过语音向你提问，你需要：
+1. 理解用户的问题
+2. 给出简洁、准确、有用的回答
+3. 如果问题不够明确，给出最可能的解答
+
+注意：
+- 回答要简洁明了，适合直接粘贴使用
+- 避免过多的解释和废话
+- 如果是代码相关问题，直接给出代码"#;
+
+/// AI 助手默认系统提示词 - 问答模式（无选中文本）
+pub const DEFAULT_ASSISTANT_QA_PROMPT: &str = r#"你是一个智能语音助手。用户会通过语音向你提问，你需要：
+1. 理解用户的问题
+2. 给出简洁、准确、有用的回答
+3. 如果问题不够明确，给出最可能的解答
+
+注意：
+- 回答要简洁明了，适合直接粘贴使用
+- 避免过多的解释和废话
+- 如果是代码相关问题，直接给出代码"#;
+
+/// AI 助手默认系统提示词 - 文本处理模式（有选中文本）
+pub const DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT: &str = r#"你是一个文本处理专家。用户选中了一段文本，并给出了处理指令，你需要：
+1. 根据用户的指令对文本进行相应处理（润色、翻译、解释、修改等）
+2. 直接输出处理后的结果，不要添加多余的解释
+3. 保持原文的格式和结构（除非用户要求改变）
+
+常见任务示例：
+- "润色" / "改得更专业" → 优化表达，提升文笔
+- "翻译成英文" → 输出英文翻译结果
+- "解释这段代码" → 用简洁的语言说明代码功能
+- "修复语法错误" → 纠正错别字和语法问题
+- "总结" → 提炼核心要点
+
+注意：直接输出处理结果，不要添加"这是修改后的版本"之类的前缀。"#;
+
+/// Smart Command 独立配置（保留向后兼容）
+///
+/// 与 LLM 润色模块完全独立，拥有自己的 API 配置和系统提示词
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartCommandConfig {
+    /// 是否启用 Smart Command 模式
+    #[serde(default)]
+    pub enabled: bool,
+    /// API 端点
+    #[serde(default = "default_smart_command_endpoint")]
+    pub endpoint: String,
+    /// 模型名称
+    #[serde(default = "default_smart_command_model")]
+    pub model: String,
+    /// API Key
+    #[serde(default)]
+    pub api_key: String,
+    /// 系统提示词
+    #[serde(default = "default_smart_command_prompt")]
+    pub system_prompt: String,
+}
+
+/// AI 助手配置（新增，取代 SmartCommandConfig）
+///
+/// 支持双系统提示词：问答模式和文本处理模式
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantConfig {
+    /// 是否启用 AI 助手模式
+    #[serde(default)]
+    pub enabled: bool,
+    /// API 端点
+    #[serde(default = "default_assistant_endpoint")]
+    pub endpoint: String,
+    /// 模型名称
+    #[serde(default = "default_assistant_model")]
+    pub model: String,
+    /// API Key
+    #[serde(default)]
+    pub api_key: String,
+    /// 问答模式系统提示词（无选中文本时使用）
+    #[serde(default = "default_assistant_qa_prompt")]
+    pub qa_system_prompt: String,
+    /// 文本处理模式系统提示词（有选中文本时使用）
+    #[serde(default = "default_assistant_text_processing_prompt")]
+    pub text_processing_system_prompt: String,
+}
+
+fn default_smart_command_endpoint() -> String {
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
+}
+
+fn default_smart_command_model() -> String {
+    "glm-4-flash-250414".to_string()
+}
+
+fn default_smart_command_prompt() -> String {
+    DEFAULT_SMART_COMMAND_PROMPT.to_string()
+}
+
+fn default_assistant_endpoint() -> String {
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions".to_string()
+}
+
+fn default_assistant_model() -> String {
+    "glm-4-flash-250414".to_string()
+}
+
+fn default_assistant_qa_prompt() -> String {
+    DEFAULT_ASSISTANT_QA_PROMPT.to_string()
+}
+
+fn default_assistant_text_processing_prompt() -> String {
+    DEFAULT_ASSISTANT_TEXT_PROCESSING_PROMPT.to_string()
+}
+
+impl Default for SmartCommandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_smart_command_endpoint(),
+            model: default_smart_command_model(),
+            api_key: String::new(),
+            system_prompt: default_smart_command_prompt(),
+        }
+    }
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_assistant_endpoint(),
+            model: default_assistant_model(),
+            api_key: String::new(),
+            qa_system_prompt: default_assistant_qa_prompt(),
+            text_processing_system_prompt: default_assistant_text_processing_prompt(),
+        }
+    }
+}
+
+impl SmartCommandConfig {
+    /// 检查配置是否有效（API Key 已填写）
+    pub fn is_valid(&self) -> bool {
+        !self.api_key.is_empty() && !self.endpoint.is_empty() && !self.model.is_empty()
+    }
+}
+
+impl AssistantConfig {
+    /// 检查配置是否有效（API Key 已填写）
+    pub fn is_valid(&self) -> bool {
+        !self.api_key.is_empty() && !self.endpoint.is_empty() && !self.model.is_empty()
+    }
+}
+
 // 为了兼容旧版本配置，如果反序列化时 presets 为空，手动填充默认值
 impl Default for LlmConfig {
     fn default() -> Self {
@@ -303,8 +651,12 @@ impl AppConfig {
             use_realtime_asr: default_use_realtime_asr(),
             enable_llm_post_process: false,
             llm_config: LlmConfig::default(),
+            smart_command_config: SmartCommandConfig::default(),
+            assistant_config: AssistantConfig::default(),
             close_action: None,
-            hotkey_config: HotkeyConfig::default(),
+            hotkey_config: None,
+            dual_hotkey_config: DualHotkeyConfig::default(),
+            transcription_mode: TranscriptionMode::default(),
         }
     }
 
@@ -323,7 +675,9 @@ impl AppConfig {
             let content = std::fs::read_to_string(&path)?;
             let mut config: AppConfig = serde_json::from_str(&content)?;
 
-            // 迁移逻辑：如果 asr_config 为空但旧字段有值，自动迁移
+            // ========== 迁移逻辑 ==========
+
+            // 迁移 1: ASR 配置迁移（已有）
             if config.asr_config.primary.api_key.is_empty() && !config.dashscope_api_key.is_empty() {
                 tracing::info!("检测到旧配置格式，自动迁移到新格式");
                 config.asr_config.primary = AsrProviderConfig {
@@ -343,6 +697,37 @@ impl AppConfig {
                 }
             }
 
+            // 迁移 2: 旧单快捷键 → 新双快捷键
+            if let Some(old_hotkey) = config.hotkey_config.take() {
+                // 只有在 dual_hotkey_config 是默认值时才迁移
+                let is_default = config.dual_hotkey_config.dictation.keys == vec![HotkeyKey::ControlLeft, HotkeyKey::MetaLeft]
+                    && config.dual_hotkey_config.assistant.keys == vec![HotkeyKey::AltLeft, HotkeyKey::Space];
+
+                if is_default {
+                    tracing::info!("迁移旧快捷键配置 {} 到听写模式", old_hotkey.format_display());
+                    config.dual_hotkey_config.dictation = old_hotkey;
+                }
+            }
+
+            // 迁移 3: SmartCommandConfig → AssistantConfig
+            if config.smart_command_config.enabled && config.smart_command_config.is_valid() {
+                // 如果 assistant_config 是默认值（未配置），从 smart_command_config 迁移
+                if !config.assistant_config.is_valid() {
+                    tracing::info!("迁移 Smart Command 配置到 AI 助手配置");
+                    config.assistant_config = AssistantConfig {
+                        enabled: config.smart_command_config.enabled,
+                        endpoint: config.smart_command_config.endpoint.clone(),
+                        model: config.smart_command_config.model.clone(),
+                        api_key: config.smart_command_config.api_key.clone(),
+                        qa_system_prompt: config.smart_command_config.system_prompt.clone(),
+                        text_processing_system_prompt: default_assistant_text_processing_prompt(),
+                    };
+                    // 迁移后禁用旧配置
+                    config.smart_command_config.enabled = false;
+                }
+            }
+
+            // LLM 预设检查（已有）
             if config.llm_config.presets.is_empty() {
                  tracing::info!("检测到预设列表为空，用户可能删除了所有预设");
             }

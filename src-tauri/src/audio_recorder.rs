@@ -303,6 +303,11 @@ impl AudioRecorder {
 
         Ok(file_path)
     }
+
+    /// 检查是否正在录音
+    pub fn is_recording(&self) -> bool {
+        *self.is_recording.lock().unwrap()
+    }
 }
 
 // 实现 Send 和 Sync traits

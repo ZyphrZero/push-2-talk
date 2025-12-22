@@ -1,4 +1,4 @@
-// 全局快捷键监听模块 - 单例模式重构
+// 全局快捷键监听模块 - 单例模式重构 + 双模式支持
 use rdev::{listen, Event, EventType, Key};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 use std::collections::HashSet;
 use anyhow::Result;
-use crate::config::{HotkeyConfig, HotkeyKey};
+use crate::config::{HotkeyConfig, HotkeyKey, TriggerMode, DualHotkeyConfig};
 
 // 看门狗检查间隔（毫秒）
 const WATCHDOG_INTERVAL_MS: u64 = 100;
@@ -19,22 +19,26 @@ struct HotkeyState {
     is_recording: bool,
     pressed_keys: HashSet<HotkeyKey>,
     watchdog_running: bool,
+    /// 当前触发的模式（如果正在录音）
+    current_trigger_mode: Option<TriggerMode>,
 }
 
-/// 回调函数类型
-type Callback = Arc<dyn Fn() + Send + Sync>;
+/// 回调函数类型（接收触发模式参数）
+type Callback = Arc<dyn Fn(TriggerMode) + Send + Sync>;
 
-/// 单例热键服务
+/// 单例热键服务（支持双模式）
 pub struct HotkeyService {
     /// 服务是否激活（控制是否响应热键事件）
     is_active: Arc<AtomicBool>,
-    /// 当前热键配置（可动态更新）
-    config: Arc<RwLock<HotkeyConfig>>,
+    /// 听写模式快捷键配置
+    dictation_config: Arc<RwLock<HotkeyConfig>>,
+    /// AI助手模式快捷键配置
+    assistant_config: Arc<RwLock<HotkeyConfig>>,
     /// 内部状态
     state: Arc<Mutex<HotkeyState>>,
     /// 监听线程是否已启动
     listener_started: Arc<AtomicBool>,
-    /// 回调函数
+    /// 回调函数（现在接收 TriggerMode 参数）
     on_start: Arc<RwLock<Option<Callback>>>,
     on_stop: Arc<RwLock<Option<Callback>>>,
 }
@@ -43,7 +47,11 @@ impl HotkeyService {
     pub fn new() -> Self {
         Self {
             is_active: Arc::new(AtomicBool::new(false)),
-            config: Arc::new(RwLock::new(HotkeyConfig::default())),
+            dictation_config: Arc::new(RwLock::new(HotkeyConfig::default())),
+            assistant_config: Arc::new(RwLock::new(HotkeyConfig {
+                keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
+                mode: crate::config::HotkeyMode::Press,
+            })),
             state: Arc::new(Mutex::new(HotkeyState::default())),
             listener_started: Arc::new(AtomicBool::new(false)),
             on_start: Arc::new(RwLock::new(None)),
@@ -130,7 +138,7 @@ impl HotkeyService {
         }
     }
 
-    /// 初始化监听线程（只调用一次）
+    /// 初始化监听线程（只调用一次，带自动重启机制）
     pub fn init_listener(&self) -> Result<()> {
         // 防止重复启动
         if self.listener_started.swap(true, Ordering::SeqCst) {
@@ -138,177 +146,290 @@ impl HotkeyService {
             return Ok(());
         }
 
-        tracing::info!("初始化全局快捷键监听线程");
+        tracing::info!("初始化全局快捷键监听线程（双模式）");
 
         let is_active = Arc::clone(&self.is_active);
-        let config = Arc::clone(&self.config);
+        let dictation_config = Arc::clone(&self.dictation_config);
+        let assistant_config = Arc::clone(&self.assistant_config);
         let state = Arc::clone(&self.state);
         let on_start = Arc::clone(&self.on_start);
         let on_stop = Arc::clone(&self.on_stop);
 
         thread::spawn(move || {
             tracing::info!("快捷键监听线程已启动");
-            let mut first_key_logged = false;
 
-            let callback = move |event: Event| {
-                // 检查服务是否激活
-                if !is_active.load(Ordering::Relaxed) {
-                    return;
-                }
+            // 外层循环：如果 rdev 监听器崩溃则自动重启
+            loop {
+                let mut first_key_logged = false;
 
-                // 第一次检测到按键时记录
-                if !first_key_logged && matches!(event.event_type, EventType::KeyPress(_)) {
-                    first_key_logged = true;
-                    tracing::info!("✓ rdev 正常工作 - 已检测到键盘事件");
-                }
+                // 克隆变量供闭包使用
+                let is_active_inner = Arc::clone(&is_active);
+                let dictation_config_inner = Arc::clone(&dictation_config);
+                let assistant_config_inner = Arc::clone(&assistant_config);
+                let state_inner = Arc::clone(&state);
+                let on_start_inner = Arc::clone(&on_start);
+                let on_stop_inner = Arc::clone(&on_stop);
 
-                match event.event_type {
-                    EventType::KeyPress(key) => {
-                        if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
-                            let current_config = config.read().unwrap().clone();
-                            let mut s = state.lock().unwrap();
+                let callback = move |event: Event| {
+                    // 检查服务是否激活
+                    if !is_active_inner.load(Ordering::Relaxed) {
+                        return;
+                    }
 
-                            s.pressed_keys.insert(hotkey_key);
+                    // 第一次检测到按键时记录
+                    if !first_key_logged && matches!(event.event_type, EventType::KeyPress(_)) {
+                        first_key_logged = true;
+                        tracing::info!("✓ rdev 正常工作 - 已检测到键盘事件");
+                    }
 
-                            // 严格匹配：检查包含关系 + 数量一致（防止 Ctrl+Space 被 Ctrl+Shift+Space 误触发）
-                            let contains_all = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
-                            let count_match = s.pressed_keys.len() == current_config.keys.len();
-                            if contains_all && count_match && !s.is_recording {
-                                s.is_recording = true;
-                                tracing::info!("检测到快捷键按下: {}，开始录音", current_config.format_display());
+                    match event.event_type {
+                        EventType::KeyPress(key) => {
+                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
+                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
+                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
+                                let mut s = state_inner.lock().unwrap();
 
-                                // 启动看门狗
-                                if s.watchdog_running {
-                                    drop(s);
-                                    if let Some(cb) = on_start.read().unwrap().as_ref() {
-                                        cb();
+                                s.pressed_keys.insert(hotkey_key);
+
+                                // 调试日志：检测按键数量异常（可能有键卡死）
+                                let max_keys = dictation_cfg.keys.len().max(assistant_cfg.keys.len());
+                                if s.pressed_keys.len() > max_keys + 2 {
+                                    // 仅在确实异常时输出，使用 debug 级别避免日志刷屏
+                                    tracing::debug!(
+                                        "当前按下按键数 ({}) 异常偏多，可能有按键状态卡死: {:?}",
+                                        s.pressed_keys.len(),
+                                        s.pressed_keys
+                                    );
+                                }
+
+                                // 严格匹配：检查是否匹配两个配置中的任意一个
+                                let (matches_dictation, matches_assistant) = {
+                                    let contains_dictation = dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
+                                    let count_dictation = s.pressed_keys.len() == dictation_cfg.keys.len();
+
+                                    let contains_assistant = assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k));
+                                    let count_assistant = s.pressed_keys.len() == assistant_cfg.keys.len();
+
+                                    (contains_dictation && count_dictation, contains_assistant && count_assistant)
+                                };
+
+                                if !s.is_recording {
+                                    // 确定触发模式（听写优先）
+                                    let trigger_mode = if matches_dictation {
+                                        Some(TriggerMode::Dictation)
+                                    } else if matches_assistant {
+                                        Some(TriggerMode::AiAssistant)
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(mode) = trigger_mode {
+                                        s.is_recording = true;
+                                        s.current_trigger_mode = Some(mode);
+                                        let mode_name = mode.display_name();
+                                        tracing::info!("检测到快捷键按下: {}，开始录音", mode_name);
+
+                                        // 启动看门狗
+                                        if s.watchdog_running {
+                                            drop(s);
+                                            if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
+                                                cb(mode);
+                                            }
+                                            return;
+                                        }
+
+                                        s.watchdog_running = true;
+                                        drop(s);
+
+                                        // 启动看门狗线程
+                                        let state_wd = Arc::clone(&state_inner);
+                                        let dictation_cfg_wd = Arc::clone(&dictation_config_inner);
+                                        let assistant_cfg_wd = Arc::clone(&assistant_config_inner);
+                                        let is_active_wd = Arc::clone(&is_active_inner);
+                                        let on_stop_wd = Arc::clone(&on_stop_inner);
+
+                                        thread::spawn(move || {
+                                            tracing::debug!("看门狗线程已启动");
+                                            let mut release_detected_count: u64 = 0;
+                                            let required_count = (KEY_RELEASE_STABLE_MS / WATCHDOG_INTERVAL_MS).max(1);
+
+                                            loop {
+                                                thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
+
+                                                // 检查服务是否仍然激活
+                                                if !is_active_wd.load(Ordering::Relaxed) {
+                                                    let mut s = state_wd.lock().unwrap();
+                                                    s.watchdog_running = false;
+                                                    s.is_recording = false;
+                                                    s.current_trigger_mode = None;
+                                                    tracing::debug!("看门狗线程退出（服务已停止）");
+                                                    break;
+                                                }
+
+                                                let s = state_wd.lock().unwrap();
+                                                if !s.watchdog_running || !s.is_recording {
+                                                    tracing::debug!("看门狗线程正常退出");
+                                                    break;
+                                                }
+
+                                                // 根据当前触发模式检查对应的按键
+                                                let all_pressed = match s.current_trigger_mode {
+                                                    Some(TriggerMode::Dictation) => {
+                                                        let cfg = dictation_cfg_wd.read().unwrap();
+                                                        cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
+                                                    }
+                                                    Some(TriggerMode::AiAssistant) => {
+                                                        let cfg = assistant_cfg_wd.read().unwrap();
+                                                        cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
+                                                    }
+                                                    None => false,
+                                                };
+                                                drop(s);
+
+                                                if !all_pressed {
+                                                    release_detected_count += 1;
+                                                    if release_detected_count >= required_count {
+                                                        let mut s = state_wd.lock().unwrap();
+                                                        if s.is_recording {
+                                                            let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
+                                                            s.is_recording = false;
+                                                            s.watchdog_running = false;
+                                                            s.current_trigger_mode = None;
+                                                            drop(s);
+                                                            tracing::warn!("看门狗检测到按键释放事件丢失，强制停止录音");
+                                                            if let Some(cb) = on_stop_wd.read().unwrap().as_ref() {
+                                                                cb(mode);
+                                                            }
+                                                        }
+                                                        break;
+                                                    }
+                                                } else {
+                                                    release_detected_count = 0;
+                                                }
+                                            }
+
+                                            let mut s = state_wd.lock().unwrap();
+                                            s.watchdog_running = false;
+                                        });
+
+                                        if let Some(cb) = on_start_inner.read().unwrap().as_ref() {
+                                            cb(mode);
+                                        }
                                     }
+                                }
+                            }
+                        }
+                        EventType::KeyRelease(key) => {
+                            if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
+                                let dictation_cfg = dictation_config_inner.read().unwrap().clone();
+                                let assistant_cfg = assistant_config_inner.read().unwrap().clone();
+                                let mut s = state_inner.lock().unwrap();
+
+                                s.pressed_keys.remove(&hotkey_key);
+
+                                // 增强的防呆逻辑：如果释放的是修饰键且未录音，检查是否所有修饰键都已释放
+                                if hotkey_key.is_modifier() && !s.is_recording {
+                                    let has_any_modifier = s.pressed_keys.iter().any(|k| k.is_modifier());
+                                    if !has_any_modifier && !s.pressed_keys.is_empty() {
+                                        // 所有修饰键已释放，但还有其他键残留，可能是状态卡死
+                                        tracing::warn!(
+                                            "所有修饰键已释放但仍有残留按键: {:?}，强制清理",
+                                            s.pressed_keys
+                                        );
+                                        s.pressed_keys.clear();
+                                    } else if !has_any_modifier {
+                                        s.pressed_keys.clear();
+                                        tracing::debug!("所有修饰键已释放，强制清理按键状态");
+                                    }
+                                }
+
+                                if !s.is_recording {
                                     return;
                                 }
 
-                                s.watchdog_running = true;
-                                drop(s);
-
-                                // 启动看门狗线程
-                                let state_wd = Arc::clone(&state);
-                                let config_wd = Arc::clone(&config);
-                                let is_active_wd = Arc::clone(&is_active);
-                                let on_stop_wd = Arc::clone(&on_stop);
-
-                                thread::spawn(move || {
-                                    tracing::debug!("看门狗线程已启动");
-                                    let mut release_detected_count: u64 = 0;
-                                    let required_count = (KEY_RELEASE_STABLE_MS / WATCHDOG_INTERVAL_MS).max(1);
-
-                                    loop {
-                                        thread::sleep(Duration::from_millis(WATCHDOG_INTERVAL_MS));
-
-                                        // 检查服务是否仍然激活
-                                        if !is_active_wd.load(Ordering::Relaxed) {
-                                            let mut s = state_wd.lock().unwrap();
-                                            s.watchdog_running = false;
-                                            s.is_recording = false;
-                                            tracing::debug!("看门狗线程退出（服务已停止）");
-                                            break;
-                                        }
-
-                                        let s = state_wd.lock().unwrap();
-                                        if !s.watchdog_running || !s.is_recording {
-                                            tracing::debug!("看门狗线程正常退出");
-                                            break;
-                                        }
-
-                                        let current_config = config_wd.read().unwrap();
-                                        let all_pressed = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
-                                        drop(current_config);
-                                        drop(s);
-
-                                        if !all_pressed {
-                                            release_detected_count += 1;
-                                            if release_detected_count >= required_count {
-                                                let mut s = state_wd.lock().unwrap();
-                                                if s.is_recording {
-                                                    s.is_recording = false;
-                                                    s.watchdog_running = false;
-                                                    drop(s);
-                                                    tracing::warn!("看门狗检测到按键释放事件丢失，强制停止录音");
-                                                    if let Some(cb) = on_stop_wd.read().unwrap().as_ref() {
-                                                        cb();
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        } else {
-                                            release_detected_count = 0;
-                                        }
+                                // 根据当前触发模式检查对应的按键是否全部按下
+                                let all_pressed = match s.current_trigger_mode {
+                                    Some(TriggerMode::Dictation) => {
+                                        dictation_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
                                     }
+                                    Some(TriggerMode::AiAssistant) => {
+                                        assistant_cfg.keys.iter().all(|k| s.pressed_keys.contains(k))
+                                    }
+                                    None => false,
+                                };
 
-                                    let mut s = state_wd.lock().unwrap();
+                                if !all_pressed {
+                                    let mode = s.current_trigger_mode.unwrap_or(TriggerMode::Dictation);
+                                    s.is_recording = false;
                                     s.watchdog_running = false;
-                                });
+                                    s.current_trigger_mode = None;
+                                    drop(s);
 
-                                if let Some(cb) = on_start.read().unwrap().as_ref() {
-                                    cb();
+                                    tracing::info!("检测到快捷键释放，停止录音");
+                                    if let Some(cb) = on_stop_inner.read().unwrap().as_ref() {
+                                        cb(mode);
+                                    }
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    EventType::KeyRelease(key) => {
-                        if let Some(hotkey_key) = Self::rdev_to_hotkey_key(key) {
-                            let current_config = config.read().unwrap().clone();
-                            let mut s = state.lock().unwrap();
+                };
 
-                            s.pressed_keys.remove(&hotkey_key);
-
-                            // 防呆逻辑：如果释放的是修饰键且未录音，检查是否所有修饰键都已释放
-                            if hotkey_key.is_modifier() && !s.is_recording {
-                                let has_any_modifier = s.pressed_keys.iter().any(|k| k.is_modifier());
-                                if !has_any_modifier {
-                                    s.pressed_keys.clear();
-                                    tracing::debug!("所有修饰键已释放，强制清理按键状态");
-                                }
-                            }
-
-                            if !s.is_recording {
-                                return;
-                            }
-
-                            let all_pressed = current_config.keys.iter().all(|k| s.pressed_keys.contains(k));
-                            if !all_pressed {
-                                s.is_recording = false;
-                                s.watchdog_running = false;
-                                drop(s);
-
-                                tracing::info!("检测到快捷键释放，停止录音");
-                                if let Some(cb) = on_stop.read().unwrap().as_ref() {
-                                    cb();
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+                // 执行监听
+                tracing::info!("开始执行 rdev listen...");
+                if let Err(error) = listen(callback) {
+                    tracing::error!("rdev 监听器发生错误退出: {:?}。将在 2 秒后重启监听。", error);
+                } else {
+                    tracing::warn!("rdev 监听器意外正常返回（通常不应发生）。将在 2 秒后重启监听。");
                 }
-            };
 
-            if let Err(error) = listen(callback) {
-                tracing::error!("无法监听键盘事件: {:?}", error);
+                // 重启前重置状态，防止按键卡死
+                {
+                    let mut s = state.lock().unwrap();
+                    s.pressed_keys.clear();
+                    s.is_recording = false;
+                    s.watchdog_running = false;
+                    s.current_trigger_mode = None;
+                }
+
+                // 等待一会再重启，避免死循环占用 CPU
+                thread::sleep(Duration::from_secs(2));
+                tracing::info!("正在重启 rdev 监听器...");
             }
         });
 
         Ok(())
     }
 
-    /// 更新配置并激活服务
-    pub fn activate<F1, F2>(&self, config: HotkeyConfig, on_start: F1, on_stop: F2) -> Result<()>
+    /// 激活双模式快捷键服务（新接口）
+    ///
+    /// # Arguments
+    /// * `config` - 双快捷键配置（听写模式 + AI助手模式）
+    /// * `on_start` - 开始录音回调（接收 TriggerMode 参数）
+    /// * `on_stop` - 停止录音回调（接收 TriggerMode 参数）
+    pub fn activate_dual<F1, F2>(
+        &self,
+        config: DualHotkeyConfig,
+        on_start: F1,
+        on_stop: F2,
+    ) -> Result<()>
     where
-        F1: Fn() + Send + Sync + 'static,
-        F2: Fn() + Send + Sync + 'static,
+        F1: Fn(TriggerMode) + Send + Sync + 'static,
+        F2: Fn(TriggerMode) + Send + Sync + 'static,
     {
-        let hotkey_display = config.format_display();
-        tracing::info!("激活快捷键服务 ({})", hotkey_display);
+        // 验证配置
+        config.validate()?;
+
+        tracing::info!(
+            "激活双模式快捷键服务 (听写: {}, AI助手: {})",
+            config.dictation.format_display(),
+            config.assistant.format_display()
+        );
 
         // 更新配置
-        *self.config.write().unwrap() = config;
+        *self.dictation_config.write().unwrap() = config.dictation;
+        *self.assistant_config.write().unwrap() = config.assistant;
 
         // 更新回调
         *self.on_start.write().unwrap() = Some(Arc::new(on_start));
@@ -320,6 +441,7 @@ impl HotkeyService {
             s.is_recording = false;
             s.pressed_keys.clear();
             s.watchdog_running = false;
+            s.current_trigger_mode = None;
         }
 
         // 确保监听线程已启动
@@ -329,6 +451,39 @@ impl HotkeyService {
         self.is_active.store(true, Ordering::SeqCst);
 
         Ok(())
+    }
+
+    /// 更新配置并激活服务（旧接口，向后兼容）
+    ///
+    /// 注意：此方法已过时，仅用于向后兼容。新代码应使用 activate_dual()
+    #[deprecated(note = "Use activate_dual() instead")]
+    #[allow(dead_code)]
+    pub fn activate<F1, F2>(&self, config: HotkeyConfig, on_start: F1, on_stop: F2) -> Result<()>
+    where
+        F1: Fn() + Send + Sync + 'static,
+        F2: Fn() + Send + Sync + 'static,
+    {
+        let hotkey_display = config.format_display();
+        tracing::info!("激活快捷键服务 ({})", hotkey_display);
+
+        // 将单配置映射到双配置（听写模式）
+        let dual_config = DualHotkeyConfig {
+            dictation: config,
+            assistant: HotkeyConfig {
+                keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
+                mode: crate::config::HotkeyMode::Press,
+            },
+        };
+
+        // 包装回调来忽略 TriggerMode 参数
+        let on_start_wrapped = move |_mode: TriggerMode| {
+            on_start();
+        };
+        let on_stop_wrapped = move |_mode: TriggerMode| {
+            on_stop();
+        };
+
+        self.activate_dual(dual_config, on_start_wrapped, on_stop_wrapped)
     }
 
     /// 停用服务（不终止线程）
@@ -341,10 +496,41 @@ impl HotkeyService {
         s.is_recording = false;
         s.pressed_keys.clear();
         s.watchdog_running = false;
+        s.current_trigger_mode = None;
     }
 
     /// 检查服务是否激活
     pub fn is_active(&self) -> bool {
         self.is_active.load(Ordering::Relaxed)
+    }
+
+    /// 强制重置热键状态（用于手动修复状态卡死问题）
+    pub fn reset_state(&self) {
+        let mut s = self.state.lock().unwrap();
+        tracing::info!(
+            "强制重置热键状态。清理前按键: {:?}, is_recording: {}",
+            s.pressed_keys,
+            s.is_recording
+        );
+        s.pressed_keys.clear();
+        s.is_recording = false;
+        s.watchdog_running = false;
+        s.current_trigger_mode = None;
+    }
+
+    /// 获取当前状态信息（用于调试）
+    pub fn get_debug_info(&self) -> String {
+        let s = self.state.lock().unwrap();
+        let dictation_cfg = self.dictation_config.read().unwrap();
+        let assistant_cfg = self.assistant_config.read().unwrap();
+        format!(
+            "is_active: {}, is_recording: {}, pressed_keys: {:?}, trigger_mode: {:?}, dictation_hotkey: {}, assistant_hotkey: {}",
+            self.is_active.load(Ordering::Relaxed),
+            s.is_recording,
+            s.pressed_keys,
+            s.current_trigger_mode,
+            dictation_cfg.format_display(),
+            assistant_cfg.format_display()
+        )
     }
 }

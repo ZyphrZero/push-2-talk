@@ -56,6 +56,12 @@ interface HotkeyConfig {
   keys: HotkeyKey[];
 }
 
+// 双热键配置（听写模式 + AI助手模式）
+interface DualHotkeyConfig {
+  dictation: HotkeyConfig;  // 听写模式（默认 Ctrl+Win）
+  assistant: HotkeyConfig;  // AI助手模式（默认 Alt+Space）
+}
+
 // 按键显示名称映射
 const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
   control_left: 'Ctrl', control_right: 'Ctrl(右)',
@@ -106,6 +112,25 @@ interface LlmConfig {
   active_preset_id: string;
 }
 
+// Smart Command 配置（保留用于向后兼容，但不再使用）
+interface SmartCommandConfig {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  api_key: string;
+  system_prompt: string;
+}
+
+// AI 助手配置（双系统提示词）
+interface AssistantConfig {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  api_key: string;
+  qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
+  text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
+}
+
 interface AppConfig {
   dashscope_api_key: string;
   siliconflow_api_key: string;
@@ -113,8 +138,11 @@ interface AppConfig {
   use_realtime_asr: boolean;
   enable_llm_post_process: boolean;
   llm_config: LlmConfig;
+  smart_command_config: SmartCommandConfig;
+  assistant_config: AssistantConfig;      // 新增：AI 助手配置
   close_action: "close" | "minimize" | null;
-  hotkey_config: HotkeyConfig;
+  hotkey_config: HotkeyConfig;            // 保留用于迁移
+  dual_hotkey_config: DualHotkeyConfig;   // 新增：双热键配置
 }
 
 interface TranscriptionResult {
@@ -123,6 +151,8 @@ interface TranscriptionResult {
   asr_time_ms: number;
   llm_time_ms: number | null;
   total_time_ms: number;
+  mode?: string; // "normal" | "smartcommand"
+  inserted?: boolean;
 }
 
 // --- 历史记录 ---
@@ -183,6 +213,51 @@ const DEFAULT_LLM_CONFIG: LlmConfig = {
   api_key: "",
   presets: DEFAULT_PRESETS,
   active_preset_id: "polishing"
+};
+
+// Smart Command 默认配置
+const DEFAULT_SMART_COMMAND_CONFIG: SmartCommandConfig = {
+  enabled: false,
+  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  model: "glm-4-flash-250414",
+  api_key: "",
+  system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
+1. 理解用户的问题
+2. 给出简洁、准确、有用的回答
+3. 如果问题不够明确，给出最可能的解答
+
+注意：
+- 回答要简洁明了，适合直接粘贴使用
+- 避免过多的解释和废话
+- 如果是代码相关问题，直接给出代码`
+};
+
+// AI 助手默认配置
+const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
+  enabled: false,
+  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  model: "glm-4-flash-250414",
+  api_key: "",
+  qa_system_prompt: `你是一个智能语音助手。用户会通过语音向你提问，你需要：
+1. 理解用户的问题
+2. 给出简洁、准确、有用的回答
+3. 如果问题不够明确，给出最可能的解答
+
+注意：
+- 回答要简洁明了，适合直接粘贴使用
+- 避免过多的解释和废话
+- 如果是代码相关问题，直接给出代码`,
+  text_processing_system_prompt: `你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
+
+你的任务：
+1. 理解用户的语音指令
+2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
+3. 直接输出处理后的文本
+
+注意：
+- 只输出处理后的结果，不要输出任何解释
+- 保持原文的格式和结构（除非用户要求改变）
+- 如果指令不明确，按最合理的方式处理`
 };
 
 // ASR 服务商元数据
@@ -247,11 +322,14 @@ function App() {
       enable_fallback: false,
     };
   });
-  const [showAsrModal, setShowAsrModal] = useState(false);
   const [useRealtime, setUseRealtime] = useState(true);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
-  const [showLlmModal, setShowLlmModal] = useState(false);
+  // 统一服务配置弹窗
+  const [showServiceModal, setShowServiceModal] = useState(false);
+  const [serviceModalTab, setServiceModalTab] = useState<'asr' | 'llm' | 'assistant'>('asr');
+  // smartCommandConfig 保留用于向后兼容（加载旧配置时不会报错）
+  const [smartCommandConfig] = useState<SmartCommandConfig>(DEFAULT_SMART_COMMAND_CONFIG);
   const [showApiKey, setShowApiKey] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "recording" | "transcribing">("idle");
   const [transcript, setTranscript] = useState("");
@@ -274,12 +352,20 @@ function App() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [hotkeyConfig, setHotkeyConfig] = useState<HotkeyConfig>({ keys: ['control_left', 'meta_left'] });
+  // hotkeyConfig 已迁移到 dualHotkeyConfig，不再单独使用
+  const [dualHotkeyConfig, setDualHotkeyConfig] = useState<DualHotkeyConfig>({
+    dictation: { keys: ['control_left', 'meta_left'] },
+    assistant: { keys: ['alt_left', 'space'] }
+  });
+  const [assistantConfig, setAssistantConfig] = useState<AssistantConfig>(DEFAULT_ASSISTANT_CONFIG);
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
+  const [recordingMode, setRecordingMode] = useState<'dictation' | 'assistant'>('dictation'); // 当前录制模式
   const [recordingKeys, setRecordingKeys] = useState<HotkeyKey[]>([]); // 录制时实时显示的按键
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const hasCheckedUpdateOnStartup = useRef(false);
 
   // 获取当前选中的预设对象
   const activePreset = llmConfig.presets.find(p => p.id === llmConfig.active_preset_id) || llmConfig.presets[0];
@@ -302,6 +388,25 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 100));
         await setupEventListeners();
         await loadConfig();
+
+        // 启动时自动检查更新（只执行一次）
+        if (!hasCheckedUpdateOnStartup.current) {
+          hasCheckedUpdateOnStartup.current = true;
+          try {
+            const update = await check();
+            if (update) {
+              setUpdateInfo({
+                version: update.version,
+                notes: update.body || undefined
+              });
+              setUpdateStatus("available");
+              setShowUpdateModal(true);
+            }
+          } catch (err) {
+            console.error("启动时检查更新失败:", err);
+            // 静默失败，不显示错误提示
+          }
+        }
       } catch (err) {
         console.error("初始化失败:", err);
         setError("应用初始化失败: " + String(err));
@@ -365,8 +470,16 @@ function App() {
         console.log("是否包含修饰键:", hasModifier, "是否为功能键:", isFunctionKey);
 
         if (hasModifier || isFunctionKey) {
-          setHotkeyConfig({ keys: keysArray });
+          // 根据录制模式更新对应的热键配置
+          const newDualHotkeyConfig = { ...dualHotkeyConfig };
+          if (recordingMode === 'dictation') {
+            newDualHotkeyConfig.dictation = { keys: keysArray };
+          } else {
+            newDualHotkeyConfig.assistant = { keys: keysArray };
+          }
+          setDualHotkeyConfig(newDualHotkeyConfig);
           setHotkeyError(null);
+
           // 保存配置
           invoke<string>("save_config", {
             apiKey,
@@ -374,10 +487,12 @@ function App() {
             useRealtime,
             enablePostProcess,
             llmConfig,
+            smartCommandConfig,
+            assistantConfig,
             asrConfig,
-            hotkeyConfig: { keys: keysArray }
+            dualHotkeyConfig: newDualHotkeyConfig
           }).then(() => {
-            console.log("热键配置已保存:", keysArray);
+            console.log(`${recordingMode === 'dictation' ? '听写' : 'AI助手'}模式热键配置已保存:`, keysArray);
           }).catch(err => {
             console.error("保存热键配置失败:", err);
           });
@@ -462,9 +577,24 @@ function App() {
 
       setLlmConfig(loadedLlmConfig);
 
-      // 加载热键配置
-      if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
-        setHotkeyConfig(config.hotkey_config);
+      // Smart Command 配置已移除，不再使用
+
+      // 加载 AI 助手配置
+      if (config.assistant_config) {
+        setAssistantConfig(config.assistant_config);
+      } else {
+        setAssistantConfig(DEFAULT_ASSISTANT_CONFIG);
+      }
+
+      // 加载双热键配置（优先使用 dual_hotkey_config，向后兼容 hotkey_config）
+      if (config.dual_hotkey_config) {
+        setDualHotkeyConfig(config.dual_hotkey_config);
+      } else if (config.hotkey_config && config.hotkey_config.keys.length > 0) {
+        // 如果只有旧的 hotkey_config，则迁移到 dual_hotkey_config
+        setDualHotkeyConfig({
+          dictation: config.hotkey_config,
+          assistant: { keys: ['alt_left', 'space'] }
+        });
       }
 
       // 加载关闭行为配置
@@ -480,24 +610,57 @@ function App() {
         console.error("获取开机自启状态失败:", err);
       }
 
-      // 自动启动时也需要传递 asrConfig 和 hotkeyConfig
+      // 自动启动时也需要传递 asrConfig、dualHotkeyConfig 和 assistantConfig
       const loadedAsrConfig = config.asr_config || null;
-      const loadedHotkeyConfig = config.hotkey_config && config.hotkey_config.keys.length > 0
-        ? config.hotkey_config
-        : { keys: ['control_left', 'meta_left'] as HotkeyKey[] };
+      const loadedDualHotkeyConfig = config.dual_hotkey_config || {
+        dictation: config.hotkey_config || { keys: ['control_left', 'meta_left'] as HotkeyKey[] },
+        assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] }
+      };
+      const loadedSmartCommandConfig = config.smart_command_config || DEFAULT_SMART_COMMAND_CONFIG;
+      const loadedAssistantConfig = config.assistant_config || DEFAULT_ASSISTANT_CONFIG;
 
       if (loadedAsrConfig && isAsrConfigValid(loadedAsrConfig.primary)) {
-        autoStartApp(config.dashscope_api_key, config.siliconflow_api_key || "", config.use_realtime_asr ?? true, config.enable_llm_post_process ?? false, loadedLlmConfig, loadedAsrConfig, loadedHotkeyConfig);
+        autoStartApp(
+          config.dashscope_api_key,
+          config.siliconflow_api_key || "",
+          config.use_realtime_asr ?? true,
+          config.enable_llm_post_process ?? false,
+          loadedLlmConfig,
+          loadedSmartCommandConfig,
+          loadedAssistantConfig,
+          loadedAsrConfig,
+          loadedDualHotkeyConfig
+        );
       }
     } catch (err) {
       console.error("加载配置失败:", err);
     }
   };
 
-  const autoStartApp = async (apiKey: string, fallbackApiKey: string, useRealtimeMode: boolean, enablePostProcessMode: boolean, llmCfg: LlmConfig, asrCfg: AsrConfig | null, hotkeyCfg: HotkeyConfig) => {
+  const autoStartApp = async (
+    apiKey: string,
+    fallbackApiKey: string,
+    useRealtimeMode: boolean,
+    enablePostProcessMode: boolean,
+    llmCfg: LlmConfig,
+    smartCmdCfg: SmartCommandConfig,
+    assistantCfg: AssistantConfig,
+    asrCfg: AsrConfig | null,
+    dualHotkeyCfg: DualHotkeyConfig
+  ) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 100));
-      await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime: useRealtimeMode, enablePostProcess: enablePostProcessMode, llmConfig: llmCfg, asrConfig: asrCfg, hotkeyConfig: hotkeyCfg });
+      await invoke<string>("start_app", {
+        apiKey,
+        fallbackApiKey,
+        useRealtime: useRealtimeMode,
+        enablePostProcess: enablePostProcessMode,
+        llmConfig: llmCfg,
+        smartCommandConfig: smartCmdCfg,
+        assistantConfig: assistantCfg,
+        asrConfig: asrCfg,
+        dualHotkeyConfig: dualHotkeyCfg
+      });
       setStatus("running");
       setError(null);
     } catch (err) {
@@ -519,8 +682,16 @@ function App() {
       });
       await listen<TranscriptionResult>("transcription_complete", (event) => {
         const result = event.payload;
+        console.log('[DEBUG] 收到转录结果:', {
+          mode: result.mode,
+          hasOriginalText: !!result.original_text,
+          textLength: result.text.length,
+          originalTextLength: result.original_text?.length || 0,
+          llmTime: result.llm_time_ms
+        });
         setTranscript(result.text);
         setOriginalTranscript(result.original_text);
+        setCurrentMode(result.mode || null); // 保存当前模式
         setAsrTime(result.asr_time_ms);
         setLlmTime(result.llm_time_ms);
         setTotalTime(result.total_time_ms);
@@ -605,8 +776,10 @@ function App() {
         useRealtime,
         enablePostProcess,
         llmConfig,
+        smartCommandConfig,
+        assistantConfig,
         asrConfig,
-        hotkeyConfig
+        dualHotkeyConfig
       });
       setError(null);
       setShowSuccessToast(true);
@@ -740,8 +913,29 @@ function App() {
           setError("请先配置 ASR API Key");
           return;
         }
-        await invoke<string>("save_config", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig, closeAction, hotkeyConfig });
-        await invoke<string>("start_app", { apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig, hotkeyConfig });
+        await invoke<string>("save_config", {
+          apiKey,
+          fallbackApiKey,
+          useRealtime,
+          enablePostProcess,
+          llmConfig,
+          smartCommandConfig,
+          assistantConfig,
+          asrConfig,
+          closeAction,
+          dualHotkeyConfig
+        });
+        await invoke<string>("start_app", {
+          apiKey,
+          fallbackApiKey,
+          useRealtime,
+          enablePostProcess,
+          llmConfig,
+          smartCommandConfig,
+          assistantConfig,
+          asrConfig,
+          dualHotkeyConfig
+        });
         setStatus("running");
         setError(null);
       } else {
@@ -771,9 +965,11 @@ function App() {
           useRealtime,
           enablePostProcess,
           llmConfig,
+          smartCommandConfig,
+          assistantConfig,
           asrConfig,
           closeAction: action,
-          hotkeyConfig,
+          dualHotkeyConfig,
         });
       } catch (err) {
         console.error("保存关闭配置失败:", err);
@@ -851,8 +1047,18 @@ function App() {
     return config.keys.map(k => KEY_DISPLAY_NAMES[k] || k).join(' + ');
   };
 
-  const resetHotkeyToDefault = () => {
-    setHotkeyConfig({ keys: ['control_left', 'meta_left'] });
+  const resetHotkeyToDefault = (mode: 'dictation' | 'assistant') => {
+    const defaultKeys = mode === 'dictation'
+      ? { keys: ['control_left', 'meta_left'] as HotkeyKey[] }
+      : { keys: ['alt_left', 'space'] as HotkeyKey[] };
+
+    const newDualConfig = { ...dualHotkeyConfig };
+    if (mode === 'dictation') {
+      newDualConfig.dictation = defaultKeys;
+    } else {
+      newDualConfig.assistant = defaultKeys;
+    }
+    setDualHotkeyConfig(newDualConfig);
     handleSaveConfig();
   };
 
@@ -974,7 +1180,7 @@ function App() {
               <span>
                 {isRecording ? `正在录音 ${formatTime(recordingTime)}` :
                  isTranscribing ? "AI 转写中..." :
-                 status === "running" ? `运行中 (${formatHotkeyDisplay(hotkeyConfig)})` : "已停止"}
+                 status === "running" ? "运行中" : "已停止"}
               </span>
             </div>
             {(isRecording || isTranscribing) && (
@@ -1012,7 +1218,11 @@ function App() {
             <div className="relative flex flex-col h-64 bg-white/60 backdrop-blur-sm border border-white/60 rounded-2xl p-6 shadow-inner transition-all">
               <div className="flex items-center justify-between mb-4">
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                  <Activity size={14} /> {originalTranscript ? '转写结果' : '实时转写内容'}
+                  <Activity size={14} />
+                  {originalTranscript
+                    ? (currentMode === 'assistant' ? 'AI 助手' : '转写结果')
+                    : '实时转写内容'
+                  }
                 </label>
                 {transcript && (
                     <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -1042,7 +1252,7 @@ function App() {
                 <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
                   <div className="flex flex-col min-h-0 border-r border-slate-200 pr-4">
                     <div className="text-xs text-slate-400 mb-2 flex items-center gap-1">
-                      <Mic size={12} /> 原始转录
+                      <Mic size={12} /> {currentMode === 'assistant' ? '用户问题' : '原始转录'}
                     </div>
                     <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
                       <p className="text-slate-500 text-sm leading-relaxed whitespace-pre-wrap">{originalTranscript}</p>
@@ -1050,9 +1260,12 @@ function App() {
                   </div>
                   <div className="flex flex-col min-h-0">
                     <div className="text-xs text-violet-500 mb-2 flex items-center gap-1">
-                      <Wand2 size={12} /> 
-                      {/* 显示使用的预设名称 */}
-                      {llmConfig.presets.find(p => p.id === llmConfig.active_preset_id)?.name || "智能"}润色
+                      <Wand2 size={12} />
+                      {/* 根据模式显示不同标签 */}
+                      {currentMode === 'assistant'
+                        ? 'AI 助手'
+                        : `${llmConfig.presets.find(p => p.id === llmConfig.active_preset_id)?.name || "智能"}润色`
+                      }
                     </div>
                     <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
                       <p className="text-slate-700 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
@@ -1102,7 +1315,7 @@ function App() {
                 </div>
               </div>
               <button
-                onClick={() => setShowAsrModal(true)}
+                onClick={() => { setServiceModalTab('asr'); setShowServiceModal(true); }}
                 disabled={isRunning}
                 className="p-2 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 title="配置 ASR"
@@ -1163,14 +1376,17 @@ function App() {
                     )}
                   </div>
                   <div className="text-xs text-slate-400">
-                    {enablePostProcess ? '自动去重、润色转录文本' : '直接输出原始转录'}
+                    {enablePostProcess
+                      ? (llmConfig.api_key ? '自动去重、润色转录文本' : '⚠️ 未配置 API Key')
+                      : '直接输出原始转录'
+                    }
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {enablePostProcess && (
                   <button
-                    onClick={() => setShowLlmModal(true)}
+                    onClick={() => { setServiceModalTab('llm'); setShowServiceModal(true); }}
                     disabled={isRunning}
                     className="p-2 rounded-lg bg-violet-50 text-violet-600 hover:bg-violet-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title="配置预设"
@@ -1245,427 +1461,438 @@ function App() {
         </div>
       </div>
 
-      {/* ASR Configuration Modal */}
-      {showAsrModal && (
+      {/* 统一服务配置弹窗（三个 Tab：ASR、LLM 润色、AI 助手） */}
+      {showServiceModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
 
-            {/* Modal Header */}
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-blue-50 to-indigo-50">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-100 rounded-xl text-blue-600">
-                  <Mic size={20} />
+            {/* Modal Header with Tabs */}
+            <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-gray-50">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-blue-100 rounded-xl text-blue-600">
+                    <Settings size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">服务配置</h3>
+                    <p className="text-xs text-slate-500">统一管理 ASR、LLM 润色和 AI 助手配置</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-lg font-bold text-slate-900">ASR 语音识别配置</h3>
-                  <p className="text-xs text-slate-500">配置主模型和备用模型</p>
-                </div>
+                <button onClick={() => setShowServiceModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+                  <X size={20} />
+                </button>
               </div>
-              <button onClick={() => setShowAsrModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
-                <X size={20} />
-              </button>
+
+              {/* Tab Bar */}
+              <div className="flex gap-1 p-1 bg-slate-100 rounded-xl">
+                <button
+                  onClick={() => setServiceModalTab('asr')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    serviceModalTab === 'asr'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <Mic size={16} />
+                  ASR 语音识别
+                </button>
+                <button
+                  onClick={() => setServiceModalTab('llm')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    serviceModalTab === 'llm'
+                      ? 'bg-white text-violet-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <Wand2 size={16} />
+                  LLM 润色
+                </button>
+                <button
+                  onClick={() => setServiceModalTab('assistant')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    serviceModalTab === 'assistant'
+                      ? 'bg-white text-emerald-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <MessageSquareQuote size={16} />
+                  AI 助手
+                </button>
+              </div>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-6 space-y-6">
+            {/* Tab Content */}
+            <div className="flex-1 overflow-hidden">
 
-              {/* 主模型配置 */}
-              <div className="space-y-4">
-                <h4 className="text-sm font-bold text-slate-700">主模型</h4>
-
-                <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-slate-600">服务商</label>
-                    <select
-                      value={asrConfig.primary.provider}
-                      onChange={(e) => {
-                        const newProvider = e.target.value as AsrProvider;
-                        // 从缓存恢复对应 provider 的配置
-                        setAsrConfig(prev => ({
-                          ...prev,
-                          primary: newProvider === 'qwen'
-                            ? { provider: 'qwen', api_key: asrCache.qwen.api_key }
-                            : { provider: 'doubao', api_key: '', app_id: asrCache.doubao.app_id, access_token: asrCache.doubao.access_token }
-                        }));
-                        // 记住这次的选择
-                        setAsrCache(prev => ({
-                          ...prev,
-                          active_provider: newProvider
-                        }));
-                      }}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    >
-                      <option value="qwen">{ASR_PROVIDERS.qwen.name}</option>
-                      <option value="doubao">{ASR_PROVIDERS.doubao.name}</option>
-                    </select>
+              {/* ASR Tab */}
+              {serviceModalTab === 'asr' && (
+                <div className="h-full overflow-y-auto p-6 space-y-6">
+                  <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-700">
+                    <AlertCircle size={14} className="flex-shrink-0" />
+                    <span>ASR 用于语音转文字，支持阿里千问和豆包两种主模型，以及硅基移动作为备用模型</span>
                   </div>
 
-                  {asrConfig.primary.provider === 'qwen' ? (
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-slate-600">API Key</label>
-                      <div className="relative">
-                        <input
-                          type={showApiKey ? "text" : "password"}
-                          value={asrConfig.primary.api_key}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            setAsrConfig(prev => ({
-                              ...prev,
-                              primary: { ...prev.primary, api_key: value }
-                            }));
-                            setAsrCache(prev => ({ ...prev, qwen: { api_key: value } }));
-                          }}
-                          className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                          placeholder="sk-..."
-                        />
-                        <button
-                          onClick={() => setShowApiKey(!showApiKey)}
-                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
-                        >
-                          {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
+                  {/* 主模型配置 */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-700">主模型</h4>
+                    <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-slate-600">APP ID</label>
-                        <input
-                          type="text"
-                          value={asrConfig.primary.app_id || ''}
+                        <label className="text-xs font-medium text-slate-600">服务商</label>
+                        <select
+                          value={asrConfig.primary.provider}
                           onChange={(e) => {
-                            const value = e.target.value;
+                            const newProvider = e.target.value as AsrProvider;
                             setAsrConfig(prev => ({
                               ...prev,
-                              primary: { ...prev.primary, app_id: value }
+                              primary: newProvider === 'qwen'
+                                ? { provider: 'qwen', api_key: asrCache.qwen.api_key }
+                                : { provider: 'doubao', api_key: '', app_id: asrCache.doubao.app_id, access_token: asrCache.doubao.access_token }
                             }));
-                            setAsrCache(prev => ({ ...prev, doubao: { ...prev.doubao, app_id: value } }));
+                            setAsrCache(prev => ({ ...prev, active_provider: newProvider }));
                           }}
                           className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                          placeholder="输入豆包 APP ID"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-slate-600">Access Token</label>
-                        <div className="relative">
-                          <input
-                            type={showApiKey ? "text" : "password"}
-                            value={asrConfig.primary.access_token || ''}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setAsrConfig(prev => ({
-                                ...prev,
-                                primary: { ...prev.primary, access_token: value }
-                              }));
-                              setAsrCache(prev => ({ ...prev, doubao: { ...prev.doubao, access_token: value } }));
-                            }}
-                            className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                            placeholder="输入 Access Token"
-                          />
-                          <button
-                            onClick={() => setShowApiKey(!showApiKey)}
-                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
-                          >
-                            {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  <div className="text-xs text-slate-500">
-                    模型：{ASR_PROVIDERS[asrConfig.primary.provider].model}
-                  </div>
-                </div>
-              </div>
-
-              {/* 备用模型配置 */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-slate-700">备用模型（可选）</h4>
-                  <button
-                    onClick={() => setAsrConfig(prev => {
-                      const isEnabling = !prev.enable_fallback;
-                      return {
-                        ...prev,
-                        enable_fallback: isEnabling,
-                        fallback: isEnabling && (!prev.fallback?.api_key)
-                          ? { provider: 'siliconflow', api_key: asrCache.siliconflow.api_key }
-                          : prev.fallback
-                      };
-                    })}
-                    className={`relative w-11 h-6 rounded-full transition-all duration-300 ${
-                      asrConfig.enable_fallback ? 'bg-blue-500' : 'bg-slate-300'
-                    }`}
-                  >
-                    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-all duration-300 ${
-                      asrConfig.enable_fallback ? 'left-5' : 'left-0.5'
-                    }`} />
-                  </button>
-                </div>
-
-                {asrConfig.enable_fallback && (
-                  <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200 animate-in slide-in-from-top-2 fade-in duration-300">
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-slate-600">服务商</label>
-                      <select
-                        value={asrConfig.fallback?.provider || 'siliconflow'}
-                        onChange={(e) => setAsrConfig(prev => ({
-                          ...prev,
-                          fallback: {
-                            provider: e.target.value as AsrProvider,
-                            api_key: prev.fallback?.api_key || ''
-                          }
-                        }))}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                      >
-                        <option value="siliconflow">{ASR_PROVIDERS.siliconflow.name}</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-slate-600">API Key</label>
-                      <div className="relative">
-                        <input
-                          type={showApiKey ? "text" : "password"}
-                          value={asrConfig.fallback?.api_key || ''}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAsrConfig(prev => ({
-                              ...prev,
-                              fallback: {
-                                provider: prev.fallback?.provider || 'siliconflow',
-                                api_key: val
-                              }
-                            }));
-                            setAsrCache(prev => ({
-                              ...prev,
-                              siliconflow: { api_key: val }
-                            }));
-                          }}
-                          className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                          placeholder="sk-..."
-                        />
-                        <button
-                          onClick={() => setShowApiKey(!showApiKey)}
-                          className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
                         >
-                          {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
+                          <option value="qwen">{ASR_PROVIDERS.qwen.name}</option>
+                          <option value="doubao">{ASR_PROVIDERS.doubao.name}</option>
+                        </select>
                       </div>
-                    </div>
 
-                    <div className="text-xs text-slate-500">
-                      模型：{ASR_PROVIDERS[asrConfig.fallback?.provider || 'siliconflow'].model}
-                    </div>
-
-                    <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
-                      <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
-                      <span>备用模型在主模型响应较慢时并行请求，先返回结果的模型优先使用</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
-              <button
-                onClick={() => setShowAsrModal(false)}
-                className="px-5 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
-              >
-                关闭
-              </button>
-              <button
-                onClick={() => {
-                  handleSaveConfig();
-                  setShowAsrModal(false);
-                }}
-                className="px-5 py-2.5 text-sm font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-xl shadow-lg shadow-blue-500/20 transition-all"
-              >
-                保存并应用
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Enhanced LLM Configuration Modal */}
-      {showLlmModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-            
-            {/* Modal Header */}
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-violet-50 to-purple-50">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-violet-100 rounded-xl text-violet-600">
-                  <Wand2 size={20} />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-slate-900">LLM 润色配置</h3>
-                  <p className="text-xs text-slate-500">管理不同场景的提示词预设</p>
-                </div>
-              </div>
-              <button onClick={() => setShowLlmModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Modal Body - 2 Columns */}
-            <div className="flex-1 flex overflow-hidden">
-              
-              {/* Left Sidebar: Presets List */}
-              <div className="w-1/3 bg-slate-50 border-r border-slate-200 flex flex-col">
-                <div className="p-4 border-b border-slate-200 bg-slate-50/50">
-                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">场景预设</h4>
-                  <button 
-                    onClick={handleAddPreset}
-                    className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-600 font-medium hover:border-violet-300 hover:text-violet-600 transition-all flex items-center justify-center gap-2 shadow-sm"
-                  >
-                    <Plus size={14} /> 新增预设
-                  </button>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {llmConfig.presets.map(preset => (
-                    <div 
-                      key={preset.id}
-                      onClick={() => setLlmConfig(prev => ({ ...prev, active_preset_id: preset.id }))}
-                      className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
-                        llmConfig.active_preset_id === preset.id 
-                          ? 'bg-white shadow-md border border-violet-100 ring-1 ring-violet-500/20' 
-                          : 'hover:bg-slate-100 border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`p-1.5 rounded-lg ${
-                          llmConfig.active_preset_id === preset.id ? 'bg-violet-100 text-violet-600' : 'bg-slate-200 text-slate-500'
-                        }`}>
-                          <MessageSquareQuote size={14} />
+                      {asrConfig.primary.provider === 'qwen' ? (
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-slate-600">API Key</label>
+                          <div className="relative">
+                            <input
+                              type={showApiKey ? "text" : "password"}
+                              value={asrConfig.primary.api_key}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setAsrConfig(prev => ({ ...prev, primary: { ...prev.primary, api_key: value } }));
+                                setAsrCache(prev => ({ ...prev, qwen: { api_key: value } }));
+                              }}
+                              className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                              placeholder="sk-..."
+                            />
+                            <button onClick={() => setShowApiKey(!showApiKey)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                              {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
                         </div>
-                        <span className={`text-sm font-medium ${
-                          llmConfig.active_preset_id === preset.id ? 'text-slate-900' : 'text-slate-600'
-                        }`}>
-                          {preset.name}
-                        </span>
-                      </div>
-                      
-                      {llmConfig.presets.length > 1 && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeletePreset(preset.id); }}
-                          className={`p-1.5 rounded-md text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 ${
-                            llmConfig.active_preset_id === preset.id ? 'opacity-100' : ''
-                          }`}
-                          title="删除预设"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                      ) : (
+                        <>
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium text-slate-600">APP ID</label>
+                            <input
+                              type="text"
+                              value={asrConfig.primary.app_id || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setAsrConfig(prev => ({ ...prev, primary: { ...prev.primary, app_id: value } }));
+                                setAsrCache(prev => ({ ...prev, doubao: { ...prev.doubao, app_id: value } }));
+                              }}
+                              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                              placeholder="输入豆包 APP ID"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium text-slate-600">Access Token</label>
+                            <div className="relative">
+                              <input
+                                type={showApiKey ? "text" : "password"}
+                                value={asrConfig.primary.access_token || ''}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setAsrConfig(prev => ({ ...prev, primary: { ...prev.primary, access_token: value } }));
+                                  setAsrCache(prev => ({ ...prev, doubao: { ...prev.doubao, access_token: value } }));
+                                }}
+                                className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                placeholder="输入 Access Token"
+                              />
+                              <button onClick={() => setShowApiKey(!showApiKey)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                                {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </button>
+                            </div>
+                          </div>
+                        </>
                       )}
+                      <div className="text-xs text-slate-500">模型：{ASR_PROVIDERS[asrConfig.primary.provider].model}</div>
                     </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Right Content: Preset Details & Global Config */}
-              <div className="flex-1 flex flex-col bg-white overflow-hidden">
-                
-                {/* Active Preset Editor */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                  
-                  {/* Preset Name */}
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">预设名称</label>
-                    <input
-                      type="text"
-                      value={activePreset?.name || ""}
-                      onChange={(e) => handleUpdateActivePreset('name', e.target.value)}
-                      className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-medium text-slate-900"
-                      placeholder="例如：邮件整理"
-                    />
                   </div>
 
-                  {/* System Prompt */}
-                  <div className="space-y-2 flex-1 flex flex-col">
-                    <div className="flex justify-between items-center">
-                      <label className="text-sm font-medium text-slate-700">系统提示词 (System Prompt)</label>
+                  {/* 备用模型配置 */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-slate-700">备用模型（可选）</h4>
                       <button
-                        onClick={() => {
-                          const original = DEFAULT_PRESETS.find(p => p.id === activePreset.id);
-                          if(original) handleUpdateActivePreset('system_prompt', original.system_prompt);
-                        }}
-                        className="text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1 transition-colors"
+                        onClick={() => setAsrConfig(prev => {
+                          const isEnabling = !prev.enable_fallback;
+                          return {
+                            ...prev,
+                            enable_fallback: isEnabling,
+                            fallback: isEnabling && (!prev.fallback?.api_key)
+                              ? { provider: 'siliconflow', api_key: asrCache.siliconflow.api_key }
+                              : prev.fallback
+                          };
+                        })}
+                        className={`relative w-11 h-6 rounded-full transition-all duration-300 ${asrConfig.enable_fallback ? 'bg-blue-500' : 'bg-slate-300'}`}
                       >
-                        <RotateCcw size={12} /> 恢复默认
+                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-all duration-300 ${asrConfig.enable_fallback ? 'left-5' : 'left-0.5'}`} />
                       </button>
                     </div>
-                    <textarea
-                      value={activePreset?.system_prompt || ""}
-                      onChange={(e) => handleUpdateActivePreset('system_prompt', e.target.value)}
-                      className="w-full flex-1 min-h-[200px] p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all resize-none font-mono text-slate-600 leading-relaxed"
-                      placeholder="在这里定义 AI 的行为，例如：你是一个翻译助手..."
-                    />
+
+                    {asrConfig.enable_fallback && (
+                      <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200 animate-in slide-in-from-top-2 fade-in duration-300">
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-slate-600">服务商</label>
+                          <select
+                            value={asrConfig.fallback?.provider || 'siliconflow'}
+                            onChange={(e) => setAsrConfig(prev => ({ ...prev, fallback: { provider: e.target.value as AsrProvider, api_key: prev.fallback?.api_key || '' } }))}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                          >
+                            <option value="siliconflow">{ASR_PROVIDERS.siliconflow.name}</option>
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-slate-600">API Key</label>
+                          <div className="relative">
+                            <input
+                              type={showApiKey ? "text" : "password"}
+                              value={asrConfig.fallback?.api_key || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAsrConfig(prev => ({ ...prev, fallback: { provider: prev.fallback?.provider || 'siliconflow', api_key: val } }));
+                                setAsrCache(prev => ({ ...prev, siliconflow: { api_key: val } }));
+                              }}
+                              className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                              placeholder="sk-..."
+                            />
+                            <button onClick={() => setShowApiKey(!showApiKey)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                              {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="text-xs text-slate-500">模型：{ASR_PROVIDERS[asrConfig.fallback?.provider || 'siliconflow'].model}</div>
+                        <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
+                          <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+                          <span>备用模型在主模型响应较慢时并行请求，先返回结果的模型优先使用</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* LLM Tab */}
+              {serviceModalTab === 'llm' && (
+                <div className="h-full flex overflow-hidden">
+                  {/* Left Sidebar: Presets List */}
+                  <div className="w-1/3 bg-slate-50 border-r border-slate-200 flex flex-col">
+                    <div className="p-4 border-b border-slate-200 bg-slate-50/50">
+                      <div className="flex items-center gap-2 p-2 mb-3 bg-violet-50 border border-violet-100 rounded-lg text-xs text-violet-700">
+                        <AlertCircle size={12} className="flex-shrink-0" />
+                        <span>Ctrl+Win 听写时使用</span>
+                      </div>
+                      <button
+                        onClick={handleAddPreset}
+                        className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-600 font-medium hover:border-violet-300 hover:text-violet-600 transition-all flex items-center justify-center gap-2 shadow-sm"
+                      >
+                        <Plus size={14} /> 新增预设
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      {llmConfig.presets.map(preset => (
+                        <div
+                          key={preset.id}
+                          onClick={() => setLlmConfig(prev => ({ ...prev, active_preset_id: preset.id }))}
+                          className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
+                            llmConfig.active_preset_id === preset.id
+                              ? 'bg-white shadow-md border border-violet-100 ring-1 ring-violet-500/20'
+                              : 'hover:bg-slate-100 border border-transparent'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`p-1.5 rounded-lg ${llmConfig.active_preset_id === preset.id ? 'bg-violet-100 text-violet-600' : 'bg-slate-200 text-slate-500'}`}>
+                              <MessageSquareQuote size={14} />
+                            </div>
+                            <span className={`text-sm font-medium ${llmConfig.active_preset_id === preset.id ? 'text-slate-900' : 'text-slate-600'}`}>
+                              {preset.name}
+                            </span>
+                          </div>
+                          {llmConfig.presets.length > 1 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeletePreset(preset.id); }}
+                              className={`p-1.5 rounded-md text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 ${llmConfig.active_preset_id === preset.id ? 'opacity-100' : ''}`}
+                              title="删除预设"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="h-px bg-slate-100 my-6"></div>
+                  {/* Right Content: Preset Details & Global Config */}
+                  <div className="flex-1 flex flex-col bg-white overflow-hidden">
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-slate-700">预设名称</label>
+                        <input
+                          type="text"
+                          value={activePreset?.name || ""}
+                          onChange={(e) => handleUpdateActivePreset('name', e.target.value)}
+                          className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all font-medium text-slate-900"
+                          placeholder="例如：邮件整理"
+                        />
+                      </div>
+                      <div className="space-y-2 flex-1 flex flex-col">
+                        <div className="flex justify-between items-center">
+                          <label className="text-sm font-medium text-slate-700">系统提示词 (System Prompt)</label>
+                          <button
+                            onClick={() => {
+                              const original = DEFAULT_PRESETS.find(p => p.id === activePreset.id);
+                              if(original) handleUpdateActivePreset('system_prompt', original.system_prompt);
+                            }}
+                            className="text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1 transition-colors"
+                          >
+                            <RotateCcw size={12} /> 恢复默认
+                          </button>
+                        </div>
+                        <textarea
+                          value={activePreset?.system_prompt || ""}
+                          onChange={(e) => handleUpdateActivePreset('system_prompt', e.target.value)}
+                          className="w-full flex-1 min-h-[150px] p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all resize-none font-mono text-slate-600 leading-relaxed"
+                          placeholder="在这里定义 AI 的行为..."
+                        />
+                      </div>
+                      <div className="h-px bg-slate-100 my-4"></div>
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">模型设置</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="col-span-2 space-y-1.5">
+                            <label className="text-xs font-medium text-slate-500">API Key</label>
+                            <div className="relative">
+                              <input
+                                type={showApiKey ? "text" : "password"}
+                                value={llmConfig.api_key}
+                                onChange={(e) => setLlmConfig({ ...llmConfig, api_key: e.target.value })}
+                                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                                placeholder="sk-..."
+                              />
+                              <button onClick={() => setShowApiKey(!showApiKey)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                                {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-slate-500">模型名称</label>
+                            <input
+                              type="text"
+                              value={llmConfig.model}
+                              onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                              placeholder="glm-4-flash"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-slate-500">API 地址</label>
+                            <input
+                              type="text"
+                              value={llmConfig.endpoint}
+                              onChange={(e) => setLlmConfig({ ...llmConfig, endpoint: e.target.value })}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                              placeholder="https://api..."
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
-                  {/* Global Settings Section (Collapsed style) */}
+              {/* AI Assistant Tab */}
+              {serviceModalTab === 'assistant' && (
+                <div className="h-full overflow-y-auto p-6 space-y-6">
+                  <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-xs text-emerald-700">
+                    <AlertCircle size={14} className="flex-shrink-0" />
+                    <span>AI 助手 ({formatHotkeyDisplay(dualHotkeyConfig.assistant)}) 可智能处理选中文本或回答问题，无需开关，配置 API 即可使用</span>
+                  </div>
+
+                  {/* 模型配置 */}
                   <div className="space-y-4">
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">全局模型设置</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* API Key */}
-                      <div className="col-span-2 space-y-1.5">
-                        <label className="text-xs font-medium text-slate-500">API Key</label>
+                    <h4 className="text-sm font-bold text-slate-700">模型配置</h4>
+                    <div className="space-y-4 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-600">API Key</label>
                         <div className="relative">
                           <input
                             type={showApiKey ? "text" : "password"}
-                            value={llmConfig.api_key}
-                            onChange={(e) => setLlmConfig({ ...llmConfig, api_key: e.target.value })}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
+                            value={assistantConfig.api_key}
+                            onChange={(e) => setAssistantConfig(prev => ({ ...prev, api_key: e.target.value }))}
+                            className="w-full px-3 py-2 pr-10 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                             placeholder="sk-..."
                           />
-                          <button
-                            onClick={() => setShowApiKey(!showApiKey)}
-                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
-                          >
+                          <button onClick={() => setShowApiKey(!showApiKey)} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
                             {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
                           </button>
                         </div>
                       </div>
-                      
-                      {/* Model */}
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-slate-500">模型名称</label>
-                        <input
-                          type="text"
-                          value={llmConfig.model}
-                          onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
-                          placeholder="gpt-4o-mini"
-                        />
-                      </div>
-
-                      {/* Endpoint */}
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-slate-500">API 地址</label>
-                        <input
-                          type="text"
-                          value={llmConfig.endpoint}
-                          onChange={(e) => setLlmConfig({ ...llmConfig, endpoint: e.target.value })}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-violet-500 transition-all"
-                          placeholder="https://api..."
-                        />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-slate-600">模型名称</label>
+                          <input
+                            type="text"
+                            value={assistantConfig.model}
+                            onChange={(e) => setAssistantConfig(prev => ({ ...prev, model: e.target.value }))}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                            placeholder="glm-4-flash"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-slate-600">API 地址</label>
+                          <input
+                            type="text"
+                            value={assistantConfig.endpoint}
+                            onChange={(e) => setAssistantConfig(prev => ({ ...prev, endpoint: e.target.value }))}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                            placeholder="https://api..."
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
 
+                  {/* 问答模式提示词 */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-700">问答模式提示词</h4>
+                    <p className="text-xs text-slate-500">无选中文本时，AI 助手将使用此提示词回答问题</p>
+                    <textarea
+                      value={assistantConfig.qa_system_prompt}
+                      onChange={(e) => setAssistantConfig(prev => ({ ...prev, qa_system_prompt: e.target.value }))}
+                      className="w-full min-h-[120px] p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all resize-none font-mono text-slate-600 leading-relaxed"
+                      placeholder="定义 AI 助手如何回答问题..."
+                    />
+                  </div>
+
+                  {/* 文本处理提示词 */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-slate-700">文本处理提示词</h4>
+                    <p className="text-xs text-slate-500">有选中文本时，AI 助手将使用此提示词处理文本（翻译、润色、总结等）</p>
+                    <textarea
+                      value={assistantConfig.text_processing_system_prompt}
+                      onChange={(e) => setAssistantConfig(prev => ({ ...prev, text_processing_system_prompt: e.target.value }))}
+                      className="w-full min-h-[120px] p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all resize-none font-mono text-slate-600 leading-relaxed"
+                      placeholder="定义 AI 助手如何处理选中的文本..."
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Modal Footer */}
             <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
               <button
-                onClick={() => setShowLlmModal(false)}
+                onClick={() => setShowServiceModal(false)}
                 className="px-5 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors"
               >
                 关闭
@@ -1673,9 +1900,13 @@ function App() {
               <button
                 onClick={() => {
                   handleSaveConfig();
-                  setShowLlmModal(false);
+                  setShowServiceModal(false);
                 }}
-                className="px-5 py-2.5 text-sm font-medium text-white bg-violet-500 hover:bg-violet-600 rounded-xl shadow-lg shadow-violet-500/20 transition-all"
+                className={`px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-lg transition-all ${
+                  serviceModalTab === 'asr' ? 'bg-blue-500 hover:bg-blue-600 shadow-blue-500/20' :
+                  serviceModalTab === 'llm' ? 'bg-violet-500 hover:bg-violet-600 shadow-violet-500/20' :
+                  'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/20'
+                }`}
               >
                 保存并应用
               </button>
@@ -1963,7 +2194,7 @@ function App() {
             {/* Modal Body */}
             <div className="p-4 space-y-3">
 
-              {/* 快捷键配置 */}
+              {/* 快捷键配置 - 双模式 */}
               <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-100">
                 <div className="flex items-center gap-3 mb-3">
                   <div className={`p-2 rounded-lg transition-colors ${
@@ -1972,49 +2203,105 @@ function App() {
                     <Keyboard size={18} />
                   </div>
                   <div>
-                    <div className="text-sm font-medium text-slate-700">快捷键</div>
+                    <div className="text-sm font-medium text-slate-700">快捷键（双模式）</div>
                     <div className="text-xs text-slate-400">
                       点击下方区域录制新的快捷键组合
                     </div>
                   </div>
                 </div>
 
-                <div
-                  onClick={() => status === 'idle' && setIsRecordingHotkey(true)}
-                  className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
-                    isRecordingHotkey
-                      ? 'border-blue-500 ring-2 ring-blue-200'
-                      : 'border-slate-200 hover:border-slate-300'
-                  } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className="flex-1 flex flex-wrap gap-1.5">
-                    {isRecordingHotkey ? (
-                      recordingKeys.length > 0 ? (
-                        recordingKeys.map(key => (
-                          <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
+                {/* 听写模式快捷键 */}
+                <div className="space-y-2 mb-3">
+                  <label className="text-xs font-medium text-slate-600">听写模式（语音转文字）</label>
+                  <div
+                    onClick={() => {
+                      if (status === 'idle') {
+                        setRecordingMode('dictation');
+                        setIsRecordingHotkey(true);
+                      }
+                    }}
+                    className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
+                      isRecordingHotkey && recordingMode === 'dictation'
+                        ? 'border-blue-500 ring-2 ring-blue-200'
+                        : 'border-slate-200 hover:border-slate-300'
+                    } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className="flex-1 flex flex-wrap gap-1.5">
+                      {isRecordingHotkey && recordingMode === 'dictation' ? (
+                        recordingKeys.length > 0 ? (
+                          recordingKeys.map(key => (
+                            <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
+                              {KEY_DISPLAY_NAMES[key]}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
+                        )
+                      ) : (
+                        dualHotkeyConfig.dictation.keys.map(key => (
+                          <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
                             {KEY_DISPLAY_NAMES[key]}
                           </span>
                         ))
-                      ) : (
-                        <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
-                      )
-                    ) : (
-                      hotkeyConfig.keys.map(key => (
-                        <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
-                          {KEY_DISPLAY_NAMES[key]}
-                        </span>
-                      ))
-                    )}
-                  </div>
+                      )}
+                    </div>
 
-                  <button
-                    onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault(); }}
-                    disabled={status !== 'idle'}
-                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
-                    title="重置为默认 (Ctrl+Win)"
+                    <button
+                      onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault('dictation'); }}
+                      disabled={status !== 'idle'}
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                      title="重置为默认 (Ctrl+Win)"
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* AI 助手模式快捷键 */}
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-slate-600">AI 助手模式（智能处理）</label>
+                  <div
+                    onClick={() => {
+                      if (status === 'idle') {
+                        setRecordingMode('assistant');
+                        setIsRecordingHotkey(true);
+                      }
+                    }}
+                    className={`flex items-center gap-2 p-3 bg-white border rounded-xl cursor-pointer transition-all min-h-[44px] ${
+                      isRecordingHotkey && recordingMode === 'assistant'
+                        ? 'border-blue-500 ring-2 ring-blue-200'
+                        : 'border-slate-200 hover:border-slate-300'
+                    } ${status !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
-                    <RotateCcw size={14} />
-                  </button>
+                    <div className="flex-1 flex flex-wrap gap-1.5">
+                      {isRecordingHotkey && recordingMode === 'assistant' ? (
+                        recordingKeys.length > 0 ? (
+                          recordingKeys.map(key => (
+                            <span key={key} className="px-2.5 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-md">
+                              {KEY_DISPLAY_NAMES[key]}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-sm text-blue-600 animate-pulse">按下快捷键...</span>
+                        )
+                      ) : (
+                        dualHotkeyConfig.assistant.keys.map(key => (
+                          <span key={key} className="px-2.5 py-1 bg-slate-100 text-slate-700 text-xs font-medium rounded-md">
+                            {KEY_DISPLAY_NAMES[key]}
+                          </span>
+                        ))
+                      )}
+                    </div>
+
+                    <button
+                      onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault('assistant'); }}
+                      disabled={status !== 'idle'}
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                      title="重置为默认 (Alt+Space)"
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </div>
                 </div>
 
                 {hotkeyError && (
@@ -2030,6 +2317,98 @@ function App() {
                     <span>请先停止服务后再修改快捷键</span>
                   </div>
                 )}
+              </div>
+
+              {/* 服务配置入口 - 三个服务统一显示状态 */}
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-slate-500 px-1">服务配置</div>
+
+                {/* ASR 语音识别 */}
+                <button
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setServiceModalTab('asr');
+                    setShowServiceModal(true);
+                  }}
+                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/50 transition-all"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg transition-colors ${
+                      isAsrConfigValid(asrConfig.primary) ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'
+                    }`}>
+                      <Mic size={16} />
+                    </div>
+                    <div className="text-left">
+                      <div className="text-sm font-medium text-slate-700">ASR 语音识别</div>
+                      <div className="text-xs text-slate-400">
+                        {isAsrConfigValid(asrConfig.primary)
+                          ? `${ASR_PROVIDERS[asrConfig.primary.provider].name} · 已配置`
+                          : '未配置'}
+                      </div>
+                    </div>
+                  </div>
+                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
+                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+
+                {/* LLM 润色 */}
+                <button
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setServiceModalTab('llm');
+                    setShowServiceModal(true);
+                  }}
+                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-violet-200 hover:bg-violet-50/50 transition-all"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg transition-colors ${
+                      llmConfig.api_key ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-400'
+                    }`}>
+                      <Wand2 size={16} />
+                    </div>
+                    <div className="text-left">
+                      <div className="text-sm font-medium text-slate-700">LLM 润色</div>
+                      <div className="text-xs text-slate-400">
+                        {llmConfig.api_key
+                          ? `${activePreset?.name || '文本润色'} · 已配置`
+                          : '未配置（可选）'}
+                      </div>
+                    </div>
+                  </div>
+                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
+                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+
+                {/* AI 助手 */}
+                <button
+                  onClick={() => {
+                    setShowSettingsModal(false);
+                    setServiceModalTab('assistant');
+                    setShowServiceModal(true);
+                  }}
+                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/50 transition-all"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg transition-colors ${
+                      assistantConfig.api_key ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'
+                    }`}>
+                      <MessageSquareQuote size={16} />
+                    </div>
+                    <div className="text-left">
+                      <div className="text-sm font-medium text-slate-700">AI 助手</div>
+                      <div className="text-xs text-slate-400">
+                        {assistantConfig.api_key
+                          ? `${formatHotkeyDisplay(dualHotkeyConfig.assistant)} · 已配置`
+                          : '未配置（可选）'}
+                      </div>
+                    </div>
+                  </div>
+                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
+                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
               </div>
 
               {/* 开机自启动 */}
@@ -2111,10 +2490,17 @@ function App() {
             {/* Modal Footer */}
             <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100">
               <p className="text-xs text-slate-400 text-center">
-                按 {formatHotkeyDisplay(hotkeyConfig)} 开始录音，松开后自动转写
+                听写: {formatHotkeyDisplay(dualHotkeyConfig.dictation)} · AI助手: {formatHotkeyDisplay(dualHotkeyConfig.assistant)}
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Global Toast */}
+      {copyToast && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
+          {copyToast}
         </div>
       )}
     </div>

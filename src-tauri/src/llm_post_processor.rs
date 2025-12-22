@@ -1,93 +1,147 @@
 // src-tauri/src/llm_post_processor.rs
+//
+// LLM 文本润色处理模块
+//
+// 基于通用 OpenAI 客户端，提供文本润色功能
+// 支持多预设管理，用户可自定义润色风格
 
 use anyhow::Result;
-use reqwest::Client;
-use serde_json::Value;
-use std::time::Duration;
 
 use crate::config::LlmConfig;
+use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 
+// 重新导出常用类型，保持向后兼容
+pub use crate::openai_client::{Message, Role};
+
+/// LLM 文本润色处理器
+///
+/// 使用通用 OpenAI 客户端，专注于文本润色功能
 #[derive(Clone)]
 pub struct LlmPostProcessor {
+    client: OpenAiClient,
     config: LlmConfig,
-    client: Client,
 }
 
 impl LlmPostProcessor {
+    /// 创建新的处理器实例
     pub fn new(config: LlmConfig) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .connect_timeout(Duration::from_secs(5))
-            .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10)
-            .no_proxy()
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client_config = OpenAiClientConfig::new(
+            &config.endpoint,
+            &config.api_key,
+            &config.model,
+        );
+        let client = OpenAiClient::new(client_config);
 
-        Self { config, client }
+        Self { client, config }
     }
 
-    // 辅助函数：获取当前激活的 Prompt
+    /// 获取 LLM 配置（用于外部检查）
+    pub fn config(&self) -> &LlmConfig {
+        &self.config
+    }
+
+    /// 获取当前激活的润色 Prompt
     fn get_active_system_prompt(&self) -> String {
-        self.config.presets
+        self.config
+            .presets
             .iter()
             .find(|p| p.id == self.config.active_preset_id)
             .map(|p| p.system_prompt.clone())
             .unwrap_or_else(|| "You are a helpful assistant.".to_string())
     }
 
+    /// 通用聊天方法（委托给底层客户端）
+    ///
+    /// 保留此方法以保持向后兼容
+    pub async fn chat(
+        &self,
+        messages: &[Message],
+        options: ChatOptions,
+    ) -> Result<String> {
+        self.client.chat(
+            &messages.iter().map(|m| crate::openai_client::Message {
+                role: match m.role {
+                    Role::System => crate::openai_client::Role::System,
+                    Role::User => crate::openai_client::Role::User,
+                    Role::Assistant => crate::openai_client::Role::Assistant,
+                },
+                content: m.content.clone(),
+            }).collect::<Vec<_>>(),
+            options,
+        ).await
+    }
+
+    /// 简化的单轮对话方法（委托给底层客户端）
+    pub async fn chat_simple(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        options: ChatOptions,
+    ) -> Result<String> {
+        self.client.chat_simple(system_prompt, user_message, options).await
+    }
+
+    /// 文本润色
+    ///
+    /// 使用当前激活的预设对 ASR 转写文本进行润色
+    ///
+    /// # Arguments
+    /// * `raw_text` - ASR 转写的原始文本
+    ///
+    /// # Returns
+    /// * 润色后的文本
     pub async fn polish_transcript(&self, raw_text: &str) -> Result<String> {
         if raw_text.trim().is_empty() {
             return Ok(String::new());
         }
 
         let system_prompt = self.get_active_system_prompt();
-        tracing::info!("LLM 使用预设 ID: {}", self.config.active_preset_id);
+        tracing::info!("LLM 润色使用预设 ID: {}", self.config.active_preset_id);
 
-        // 使用 OpenAI 兼容格式
-        let request_body = serde_json::json!({
-            "model": self.config.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
+        // 添加明确的标识符，防止模型误判为提问
+        let user_message = format!("<用户ASR的转写内容>\n\n{}\n\n</用户ASR的转写内容>", raw_text);
+
+        self.client
+            .chat_simple(&system_prompt, &user_message, ChatOptions::for_polishing())
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::LlmPreset;
+
+    fn create_test_config() -> LlmConfig {
+        LlmConfig {
+            endpoint: "https://api.example.com/v1/chat/completions".to_string(),
+            model: "test-model".to_string(),
+            api_key: "test-key".to_string(),
+            presets: vec![
+                LlmPreset {
+                    id: "test".to_string(),
+                    name: "Test Preset".to_string(),
+                    system_prompt: "You are a test assistant.".to_string(),
                 },
-                {
-                    "role": "user",
-                    "content": format!("<ASR转写的文本>\n{}\n</ASR转写的文本>", raw_text)
-                }
             ],
-            "max_tokens": 1024, // 稍微调大一点以防万一
-            "temperature": 0.3
-        });
-
-        // ... (其余代码保持不变)
-        tracing::debug!("LLM 请求: endpoint={}, model={}", self.config.endpoint, self.config.model);
-
-        let response = self
-            .client
-            .post(&self.config.endpoint)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("LLM 处理失败 ({}): {}", status, text);
+            active_preset_id: "test".to_string(),
         }
+    }
 
-        let payload: Value = response.json().await?;
+    #[test]
+    fn test_get_active_system_prompt() {
+        let config = create_test_config();
+        let processor = LlmPostProcessor::new(config);
+        let prompt = processor.get_active_system_prompt();
+        assert_eq!(prompt, "You are a test assistant.");
+    }
 
-        // 尝试解析 OpenAI 格式的响应
-        let refined = payload["choices"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|choice| choice["message"]["content"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("LLM 返回格式不可解析: {:?}", payload))?;
-
-        Ok(refined.trim().to_string())
+    #[test]
+    fn test_get_active_system_prompt_fallback() {
+        let mut config = create_test_config();
+        config.active_preset_id = "non-existent".to_string();
+        let processor = LlmPostProcessor::new(config);
+        let prompt = processor.get_active_system_prompt();
+        assert_eq!(prompt, "You are a helpful assistant.");
     }
 }
