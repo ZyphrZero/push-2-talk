@@ -619,41 +619,6 @@ impl HotkeyService {
         Ok(())
     }
 
-    /// 更新配置并激活服务（旧接口，向后兼容）
-    ///
-    /// 注意：此方法已过时，仅用于向后兼容。新代码应使用 activate_dual()
-    #[deprecated(note = "Use activate_dual() instead")]
-    #[allow(dead_code)]
-    pub fn activate<F1, F2>(&self, config: HotkeyConfig, on_start: F1, on_stop: F2) -> Result<()>
-    where
-        F1: Fn() + Send + Sync + 'static,
-        F2: Fn() + Send + Sync + 'static,
-    {
-        let hotkey_display = config.format_display();
-        tracing::info!("激活快捷键服务 ({})", hotkey_display);
-
-        // 将单配置映射到双配置（听写模式）
-        let dual_config = DualHotkeyConfig {
-            dictation: config,
-            assistant: HotkeyConfig {
-                keys: vec![HotkeyKey::AltLeft, HotkeyKey::Space],
-                mode: crate::config::HotkeyMode::Press,
-                enable_release_lock: false,
-                release_mode_keys: None,
-            },
-        };
-
-        // 包装回调来忽略 TriggerMode 和 is_release_mode 参数
-        let on_start_wrapped = move |_mode: TriggerMode, _is_release: bool| {
-            on_start();
-        };
-        let on_stop_wrapped = move |_mode: TriggerMode, _is_release: bool| {
-            on_stop();
-        };
-
-        self.activate_dual(dual_config, on_start_wrapped, on_stop_wrapped)
-    }
-
     /// 停用服务（不终止线程）
     pub fn deactivate(&self) {
         tracing::info!("停用快捷键服务");
@@ -665,11 +630,6 @@ impl HotkeyService {
         s.pressed_keys.clear();
         s.watchdog_running = false;
         s.current_trigger_mode = None;
-    }
-
-    /// 检查服务是否激活
-    pub fn is_active(&self) -> bool {
-        self.is_active.load(Ordering::Relaxed)
     }
 
     /// 强制重置热键状态（用于手动修复状态卡死问题）

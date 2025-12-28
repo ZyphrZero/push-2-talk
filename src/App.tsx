@@ -335,8 +335,8 @@ function App() {
   // 统一服务配置弹窗
   const [showServiceModal, setShowServiceModal] = useState(false);
   const [serviceModalTab, setServiceModalTab] = useState<'asr' | 'llm' | 'assistant'>('asr');
-  // smartCommandConfig 保留用于向后兼容（加载旧配置时不会报错）
-  const [smartCommandConfig] = useState<SmartCommandConfig>(DEFAULT_SMART_COMMAND_CONFIG);
+  // smartCommandConfig 保留用于向后兼容（加载旧配置时不会报错），使用常量替代 useState
+  const smartCommandConfig = DEFAULT_SMART_COMMAND_CONFIG;
   const [showApiKey, setShowApiKey] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "recording" | "transcribing">("idle");
   const [transcript, setTranscript] = useState("");

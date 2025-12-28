@@ -397,9 +397,9 @@ async fn start_app(
     use_realtime: Option<bool>,
     enable_post_process: Option<bool>,
     llm_config: Option<config::LlmConfig>,
-    smart_command_config: Option<config::SmartCommandConfig>,
+    _smart_command_config: Option<config::SmartCommandConfig>,
     asr_config: Option<config::AsrConfig>,
-    hotkey_config: Option<config::HotkeyConfig>,
+    _hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
 ) -> Result<String, String> {
@@ -598,7 +598,7 @@ async fn start_app(
     let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
 
     // 保存当前的 provider 配置和凭证
-    let (provider_type, doubao_app_id, doubao_access_token) = if let Some(ref cfg) = asr_config {
+    let (_provider_type, doubao_app_id, doubao_access_token) = if let Some(ref cfg) = asr_config {
         *state.realtime_provider.lock().unwrap() = Some(cfg.primary.provider.clone());
         (
             Some(cfg.primary.provider.clone()),
@@ -630,9 +630,9 @@ async fn start_app(
 
     // 松手模式相关变量（用于 on_start）
     let is_recording_locked_start = Arc::clone(&state.is_recording_locked);
-    let lock_timer_handle_start = Arc::clone(&state.lock_timer_handle);
-    let recording_start_time_start = Arc::clone(&state.recording_start_time);
-    let dual_hotkey_cfg_start = dual_hotkey_cfg.clone();
+    let _lock_timer_handle_start = Arc::clone(&state.lock_timer_handle);
+    let _recording_start_time_start = Arc::clone(&state.recording_start_time);
+    let _dual_hotkey_cfg_start = dual_hotkey_cfg.clone();
 
     // 松手模式相关变量（用于 on_stop）
     let is_recording_locked_stop = Arc::clone(&state.is_recording_locked);
@@ -1372,117 +1372,6 @@ async fn fallback_transcription(
     handle_transcription_result(app, post_processor, text_inserter, result, asr_time_ms).await;
 }
 
-/// 实时模式转录处理（WebSocket）- 录完再传的回退模式
-/// 注意：此函数已不再使用，保留用于向后兼容
-#[allow(dead_code)]
-async fn handle_realtime_transcription(
-    app: AppHandle,
-    streaming_recorder: Arc<Mutex<Option<StreamingRecorder>>>,
-    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
-    text_inserter: Arc<Mutex<Option<TextInserter>>>,
-    key: String,
-    qwen_client_state: Arc<Mutex<Option<QwenASRClient>>>,
-    sensevoice_client_state: Arc<Mutex<Option<SenseVoiceClient>>>,
-) {
-    let _ = app.emit("transcribing", ());
-
-    // 停止流式录音，获取完整音频数据
-    let audio_data = {
-        let mut recorder_guard = streaming_recorder.lock().unwrap();
-        if let Some(ref mut rec) = *recorder_guard {
-            match rec.stop_streaming() {
-                Ok(data) => Some(data),
-                Err(e) => {
-                    emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    };
-
-    if audio_data.is_none() {
-        return;
-    }
-
-    let audio_data = audio_data.unwrap();
-
-    // 尝试使用 WebSocket 实时 API
-    tracing::info!("尝试使用 WebSocket 实时 API 转录...");
-
-    let asr_start = std::time::Instant::now();
-    let realtime_client = QwenRealtimeClient::new(key.clone());
-    let ws_result = realtime_transcribe_audio(&realtime_client, &audio_data).await;
-    let asr_time_ms = asr_start.elapsed().as_millis() as u64;
-
-    match ws_result {
-        Ok(text) => {
-            tracing::info!("WebSocket 实时转录成功: {} (ASR 耗时: {}ms)", text, asr_time_ms);
-            handle_transcription_result(app, post_processor, text_inserter, Ok(text), asr_time_ms).await;
-        }
-        Err(e) => {
-            tracing::warn!("WebSocket 实时转录失败: {}，尝试备用方案", e);
-            fallback_transcription(
-                app,
-                post_processor,
-                text_inserter,
-                qwen_client_state,
-                sensevoice_client_state,
-                Arc::new(Mutex::new(None)), // 此函数未使用豆包
-                audio_data,
-                false, // 此函数未使用，默认禁用并行 fallback
-            )
-            .await;
-        }
-    }
-}
-
-/// 使用 WebSocket 实时 API 转录音频
-async fn realtime_transcribe_audio(
-    client: &QwenRealtimeClient,
-    wav_data: &[u8],
-) -> anyhow::Result<String> {
-    // 创建 WebSocket 会话
-    let mut session = client.start_session().await?;
-
-    // 从 WAV 数据中提取 PCM 样本
-    let pcm_samples = extract_pcm_from_wav(wav_data)?;
-
-    // 分块发送音频数据（每块 3200 样本 = 0.2秒 @ 16kHz）
-    const CHUNK_SIZE: usize = 3200;
-    for chunk in pcm_samples.chunks(CHUNK_SIZE) {
-        session.send_audio_chunk(chunk).await?;
-        // 模拟实时发送的间隔（可选，用于更真实的流式体验）
-        // tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-
-    // 提交音频缓冲区
-    session.commit_audio().await?;
-
-    // 等待转录结果
-    let result = session.wait_for_result().await?;
-
-    // 关闭会话
-    let _ = session.close().await;
-
-    Ok(result)
-}
-
-/// 从 WAV 数据中提取 PCM 样本（16-bit, 16kHz, 单声道）
-fn extract_pcm_from_wav(wav_data: &[u8]) -> anyhow::Result<Vec<i16>> {
-    use std::io::Cursor;
-
-    let cursor = Cursor::new(wav_data);
-    let reader = hound::WavReader::new(cursor)?;
-
-    let samples: Vec<i16> = reader.into_samples::<i16>()
-        .filter_map(|s| s.ok())
-        .collect();
-
-    Ok(samples)
-}
-
 /// 统一的错误处理辅助函数 - 发送错误事件并隐藏悬浮窗
 fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
     tracing::error!("发送错误并隐藏悬浮窗: {}", error_msg);
@@ -1579,84 +1468,6 @@ async fn hide_overlay_window(app: &AppHandle) {
             if let Err(e) = overlay.hide() {
                 tracing::error!("隐藏悬浮窗重试仍然失败: {}", e);
             }
-        }
-    }
-}
-
-/// 旧版处理转录结果（保留用于向后兼容）
-///
-/// 此函数保留原有的处理逻辑，供不使用 Pipeline 架构的调用点使用
-#[allow(dead_code)]
-async fn handle_transcription_result_legacy(
-    app: AppHandle,
-    inserter: Arc<Mutex<Option<TextInserter>>>,
-    post_processor: Arc<Mutex<Option<LlmPostProcessor>>>,
-    result: anyhow::Result<String>,
-    asr_time_ms: u64,
-) {
-    match result {
-        Ok(text) => {
-            tracing::info!("转录结果: {} (ASR 耗时: {}ms)", text, asr_time_ms);
-
-            // 如果启用了 LLM 后处理，则进行润色
-            let (final_text, original_text, llm_time_ms) = {
-                let processor = post_processor.lock().unwrap().clone();
-                if let Some(processor) = processor {
-                    tracing::info!("开始 LLM 后处理...");
-                    let _ = app.emit("post_processing", ());
-                    let llm_start = std::time::Instant::now();
-                    match processor.polish_transcript(&text).await {
-                        Ok(polished) => {
-                            let llm_elapsed = llm_start.elapsed().as_millis() as u64;
-                            tracing::info!("LLM 后处理完成: {} (耗时: {}ms)", polished, llm_elapsed);
-                            (polished, Some(text), Some(llm_elapsed))
-                        }
-                        Err(e) => {
-                            tracing::warn!("LLM 后处理失败，使用原文: {}", e);
-                            (text, None, None)
-                        }
-                    }
-                } else {
-                    (text, None, None)
-                }
-            };
-
-            let total_time_ms = asr_time_ms + llm_time_ms.unwrap_or(0);
-
-            // 插入文本
-            {
-                let mut inserter_guard = inserter.lock().unwrap();
-                if let Some(ref mut ins) = *inserter_guard {
-                    if let Err(e) = ins.insert_text(&final_text) {
-                        tracing::error!("插入文本失败: {}", e);
-                        let _ = app.emit("error", format!("插入文本失败: {}", e));
-                    }
-                }
-            } // 释放 inserter_guard
-
-            let result = TranscriptionResult {
-                text: final_text,
-                original_text,
-                asr_time_ms,
-                llm_time_ms,
-                total_time_ms,
-                mode: None,
-                inserted: None,
-            };
-
-            // 先隐藏录音悬浮窗
-            hide_overlay_window(&app).await;
-
-            // 后发送完成事件
-            let _ = app.emit("transcription_complete", result);
-        }
-        Err(e) => {
-            // 先隐藏录音悬浮窗
-            hide_overlay_window(&app).await;
-
-            // 后发送错误事件
-            tracing::error!("转录失败: {}", e);
-            let _ = app.emit("error", format!("转录失败: {}", e));
         }
     }
 }

@@ -128,11 +128,6 @@ impl OpenAiClientConfig {
             model: model.into(),
         }
     }
-
-    /// 检查配置是否有效
-    pub fn is_valid(&self) -> bool {
-        !self.endpoint.is_empty() && !self.api_key.is_empty() && !self.model.is_empty()
-    }
 }
 
 // ============================================================================
@@ -161,11 +156,6 @@ impl OpenAiClient {
             .unwrap_or_else(|_| Client::new());
 
         Self { config, client }
-    }
-
-    /// 获取配置引用
-    pub fn config(&self) -> &OpenAiClientConfig {
-        &self.config
     }
 
     /// 通用聊天方法

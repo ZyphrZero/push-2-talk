@@ -10,9 +10,6 @@ use anyhow::Result;
 use crate::config::LlmConfig;
 use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 
-// 重新导出常用类型，保持向后兼容
-pub use crate::openai_client::{Message, Role};
-
 /// LLM 文本润色处理器
 ///
 /// 使用通用 OpenAI 客户端，专注于文本润色功能
@@ -35,11 +32,6 @@ impl LlmPostProcessor {
         Self { client, config }
     }
 
-    /// 获取 LLM 配置（用于外部检查）
-    pub fn config(&self) -> &LlmConfig {
-        &self.config
-    }
-
     /// 获取当前激活的润色 Prompt
     fn get_active_system_prompt(&self) -> String {
         self.config
@@ -48,37 +40,6 @@ impl LlmPostProcessor {
             .find(|p| p.id == self.config.active_preset_id)
             .map(|p| p.system_prompt.clone())
             .unwrap_or_else(|| "You are a helpful assistant.".to_string())
-    }
-
-    /// 通用聊天方法（委托给底层客户端）
-    ///
-    /// 保留此方法以保持向后兼容
-    pub async fn chat(
-        &self,
-        messages: &[Message],
-        options: ChatOptions,
-    ) -> Result<String> {
-        self.client.chat(
-            &messages.iter().map(|m| crate::openai_client::Message {
-                role: match m.role {
-                    Role::System => crate::openai_client::Role::System,
-                    Role::User => crate::openai_client::Role::User,
-                    Role::Assistant => crate::openai_client::Role::Assistant,
-                },
-                content: m.content.clone(),
-            }).collect::<Vec<_>>(),
-            options,
-        ).await
-    }
-
-    /// 简化的单轮对话方法（委托给底层客户端）
-    pub async fn chat_simple(
-        &self,
-        system_prompt: &str,
-        user_message: &str,
-        options: ChatOptions,
-    ) -> Result<String> {
-        self.client.chat_simple(system_prompt, user_message, options).await
     }
 
     /// 文本润色

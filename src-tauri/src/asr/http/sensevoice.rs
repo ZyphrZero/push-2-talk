@@ -1,4 +1,3 @@
-use std::path::Path;
 use anyhow::Result;
 use crate::asr::utils;
 
@@ -17,11 +16,6 @@ impl SenseVoiceClient {
             api_key,
             client: utils::create_http_client(),
         }
-    }
-
-    pub async fn transcribe(&self, audio_path: &Path) -> Result<String> {
-        let audio_data = tokio::fs::read(audio_path).await?;
-        self.transcribe_bytes(&audio_data).await
     }
 
     pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {

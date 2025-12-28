@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
@@ -24,11 +23,6 @@ impl QwenASRClient {
         }
     }
 
-    pub async fn transcribe(&self, audio_path: &Path) -> Result<String> {
-        let audio_data = tokio::fs::read(audio_path).await?;
-        self.transcribe_bytes(&audio_data).await
-    }
-
     pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
         let mut last_error = None;
 
@@ -51,12 +45,6 @@ impl QwenASRClient {
         }
 
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("转录失败，未知错误")))
-    }
-
-    pub async fn transcribe_once(&self, audio_path: &Path) -> Result<String> {
-        tracing::info!("开始转录音频文件: {:?}", audio_path);
-        let audio_data = tokio::fs::read(audio_path).await?;
-        self.transcribe_from_memory(&audio_data).await
     }
 
     pub(crate) async fn transcribe_from_memory(&self, audio_data: &[u8]) -> Result<String> {

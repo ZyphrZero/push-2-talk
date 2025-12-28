@@ -22,16 +22,6 @@ pub enum HotkeyMode {
     Toggle,
 }
 
-impl HotkeyMode {
-    /// 获取显示名称
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            HotkeyMode::Press => "按住录音",
-            HotkeyMode::Toggle => "切换录音",
-        }
-    }
-}
-
 // ============================================================================
 // 转录处理模式
 // ============================================================================
@@ -71,32 +61,6 @@ impl TriggerMode {
         match self {
             TriggerMode::Dictation => "听写模式",
             TriggerMode::AiAssistant => "AI助手模式",
-        }
-    }
-}
-
-impl TranscriptionMode {
-    /// 获取显示名称
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            TranscriptionMode::Normal => "普通模式",
-            TranscriptionMode::Assistant => "AI助手",
-        }
-    }
-
-    /// 该模式是否需要自动插入文本
-    pub fn should_auto_insert(&self) -> bool {
-        match self {
-            TranscriptionMode::Normal => true,
-            TranscriptionMode::Assistant => true,
-        }
-    }
-
-    /// 该模式是否必须使用 LLM 处理
-    pub fn requires_llm(&self) -> bool {
-        match self {
-            TranscriptionMode::Normal => false,
-            TranscriptionMode::Assistant => true,
         }
     }
 }

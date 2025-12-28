@@ -1,27 +1,7 @@
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use anyhow::Result;
 use super::{QwenASRClient, SenseVoiceClient, DoubaoASRClient};
-
-pub async fn transcribe_with_fallback(
-    qwen_api_key: String,
-    sensevoice_api_key: String,
-    audio_path: &Path,
-) -> Result<String> {
-    let audio_data = tokio::fs::read(audio_path).await?;
-    transcribe_with_fallback_bytes(qwen_api_key, sensevoice_api_key, audio_data).await
-}
-
-pub async fn transcribe_with_fallback_bytes(
-    qwen_api_key: String,
-    sensevoice_api_key: String,
-    audio_data: Vec<u8>,
-) -> Result<String> {
-    let qwen_client = QwenASRClient::new(qwen_api_key);
-    let sensevoice_client = SenseVoiceClient::new(sensevoice_api_key);
-    transcribe_with_fallback_clients(qwen_client, sensevoice_client, audio_data).await
-}
 
 pub async fn transcribe_with_fallback_clients(
     qwen_client: QwenASRClient,

@@ -23,13 +23,11 @@ fn generate_websocket_key() -> String {
 pub struct DoubaoRealtimeSession {
     sender: mpsc::Sender<SessionCommand>,
     result_receiver: mpsc::Receiver<Result<String>>,
-    sequence: i32,
 }
 
 enum SessionCommand {
     SendAudio(Vec<u8>),
     Finish,
-    Close,
 }
 
 impl DoubaoRealtimeSession {
@@ -52,11 +50,6 @@ impl DoubaoRealtimeSession {
             Ok(None) => Err(anyhow::anyhow!("通道已关闭")),
             Err(_) => Err(anyhow::anyhow!("转录超时")),
         }
-    }
-
-    pub async fn close(&self) -> Result<()> {
-        let _ = self.sender.send(SessionCommand::Close).await;
-        Ok(())
     }
 }
 
@@ -156,10 +149,6 @@ impl DoubaoRealtimeClient {
                             }
                         }
                     }
-                    SessionCommand::Close => {
-                        let _ = write.close().await;
-                        break;
-                    }
                 }
             }
         });
@@ -235,7 +224,7 @@ impl DoubaoRealtimeClient {
             tracing::debug!("豆包 WebSocket 接收任务结束");
         });
 
-        Ok(DoubaoRealtimeSession { sender: cmd_tx, result_receiver: result_rx, sequence: 1 })
+        Ok(DoubaoRealtimeSession { sender: cmd_tx, result_receiver: result_rx })
     }
 }
 

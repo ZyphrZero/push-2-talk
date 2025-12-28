@@ -75,7 +75,6 @@ pub struct ConnectionPool {
 }
 
 struct PooledConnection {
-    sender: mpsc::Sender<SessionCommand>,
     last_used: Instant,
 }
 

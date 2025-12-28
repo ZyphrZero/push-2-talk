@@ -33,7 +33,14 @@
       "Bash(powershell -ExecutionPolicy Bypass -File bump-version.ps1 0.0.9)",
       "Bash(powershell -Command \"Select-String -Pattern ''version'' -Path package.json,src-tauri\\Cargo.toml,src-tauri\\tauri.conf.json | Select-Object -First 3\")",
       "Bash(powershell -Command \"(Get-Content src-tauri\\tauri.conf.json | Select-String ''version'').Line\")",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Skill(command-development)",
+      "Bash(echo $env:USERPROFILE)",
+      "Bash(powershell -Command \"[System.Environment]::GetFolderPath\\(''UserProfile''\\)\")",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(npm run build)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []
