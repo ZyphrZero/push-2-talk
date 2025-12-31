@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assistant_processor;
+mod audio_mute_manager;
 mod audio_recorder;
 mod audio_utils;
 mod asr;
@@ -15,6 +16,7 @@ mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
 
+use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
 use asr::{QwenASRClient, SenseVoiceClient, DoubaoASRClient, QwenRealtimeClient, DoubaoRealtimeClient, DoubaoRealtimeSession, RealtimeSession};
 use assistant_processor::AssistantProcessor;
@@ -67,6 +69,8 @@ struct AppState {
     recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
     /// 松手模式：正在处理停止中（防止重复触发）
     is_processing_stop: Arc<AtomicBool>,
+    /// 录音时静音其他应用的管理器
+    audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
 }
 
 // Tauri Commands
@@ -84,6 +88,7 @@ async fn save_config(
     hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
+    enable_mute_other_apps: Option<bool>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
     let has_fallback = !fallback_api_key.is_empty();
@@ -118,6 +123,7 @@ async fn save_config(
         hotkey_config,
         dual_hotkey_config: dual_hotkey_config.unwrap_or_default(),
         transcription_mode: config::TranscriptionMode::default(),
+        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(false),
     };
 
     config
@@ -146,8 +152,18 @@ async fn handle_recording_start(
     api_key: String,
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
+    audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
 ) {
     tracing::info!("检测到快捷键按下");
+
+    // 录音开始时：增加会话计数并静音其他应用
+    if let Some(ref manager) = *audio_mute_manager.lock().unwrap() {
+        manager.begin_session();
+        if let Err(e) = manager.mute_other_apps() {
+            tracing::warn!("静音其他应用失败: {}", e);
+        }
+    }
+
     let _ = app.emit("recording_started", ());
 
     // 显示录音悬浮窗并移动到屏幕底部居中
@@ -402,6 +418,7 @@ async fn start_app(
     _hotkey_config: Option<config::HotkeyConfig>,
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
+    enable_mute_other_apps: Option<bool>,
 ) -> Result<String, String> {
     tracing::info!("启动应用...");
 
@@ -551,6 +568,21 @@ async fn start_app(
     *state.text_inserter.lock().unwrap() = Some(text_inserter);
     tracing::info!("[DEBUG] 文本插入器初始化完成");
 
+    // 初始化或更新音频静音管理器
+    {
+        let should_mute = enable_mute_other_apps.unwrap_or(false);
+        let mut manager_lock = state.audio_mute_manager.lock().unwrap();
+        if let Some(ref manager) = *manager_lock {
+            // 如果已经存在，直接更新开关状态
+            manager.set_enabled(should_mute);
+            tracing::info!("AudioMuteManager 已更新: enabled={}", should_mute);
+        } else {
+            // 如果不存在，创建新的
+            *manager_lock = Some(AudioMuteManager::new(should_mute));
+            tracing::info!("AudioMuteManager 已创建: enabled={}", should_mute);
+        }
+    }
+
     // 根据模式初始化录音器
     *state.audio_recorder.lock().unwrap() = None;
     *state.streaming_recorder.lock().unwrap() = None;
@@ -640,6 +672,10 @@ async fn start_app(
     let recording_start_time_stop = Arc::clone(&state.recording_start_time);
     let is_processing_stop_stop = Arc::clone(&state.is_processing_stop);
 
+    // 音频静音管理器（用于 on_start 和 on_stop）
+    let audio_mute_manager_start = Arc::clone(&state.audio_mute_manager);
+    let audio_mute_manager_stop = Arc::clone(&state.audio_mute_manager);
+
     // 按键按下回调（支持双模式 + 松手模式）
     let on_start = move |trigger_mode: config::TriggerMode, is_release_mode: bool| {
         // === 防重入：如果已锁定（松手模式），忽略新的按键 ===
@@ -675,6 +711,7 @@ async fn start_app(
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
+        let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
 
         tauri::async_runtime::spawn(async move {
             // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
@@ -690,6 +727,7 @@ async fn start_app(
                 api_key,
                 doubao_app_id,
                 doubao_access_token,
+                audio_mute_manager,
             ).await;
 
             // 2. 录音初始化完成后，再发送锁定事件
@@ -743,6 +781,14 @@ async fn start_app(
         }
 
         tracing::info!("检测到快捷键释放，模式: {:?}", trigger_mode);
+
+        // 录音结束时：减少会话计数并恢复其他应用的音量
+        if let Some(ref manager) = *audio_mute_manager_stop.lock().unwrap() {
+            manager.end_session();
+            if let Err(e) = manager.restore_volumes() {
+                tracing::warn!("恢复其他应用音量失败: {}", e);
+            }
+        }
 
         let app = app_handle_stop.clone();
         let recorder = Arc::clone(&audio_recorder_stop);
@@ -1642,6 +1688,14 @@ async fn finish_locked_recording(app_handle: AppHandle) -> Result<String, String
     // 播放停止提示音
     beep_player::play_stop_beep();
 
+    // 结束会话并恢复其他应用的音量
+    if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
+        manager.end_session();
+        if let Err(e) = manager.restore_volumes() {
+            tracing::warn!("恢复其他应用音量失败: {}", e);
+        }
+    }
+
     // 发送录音停止事件（前端会显示处理动画）
     let _ = app_handle.emit("recording_stopped", ());
 
@@ -1741,6 +1795,14 @@ async fn cancel_locked_recording(app_handle: AppHandle) -> Result<String, String
     if let Some(overlay) = app_handle.get_webview_window("overlay") {
         let _ = overlay.hide();
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    // 结束会话并恢复其他应用的音量
+    if let Some(ref manager) = *state.audio_mute_manager.lock().unwrap() {
+        manager.end_session();
+        if let Err(e) = manager.restore_volumes() {
+            tracing::warn!("恢复其他应用音量失败: {}", e);
+        }
     }
 
     // 克隆 is_processing_stop 用于后续重置
@@ -1868,6 +1930,7 @@ pub fn run() {
                 lock_timer_handle: Arc::new(Mutex::new(None)),
                 recording_start_time: Arc::new(Mutex::new(None)),
                 is_processing_stop: Arc::new(AtomicBool::new(false)),
+                audio_mute_manager: Arc::new(Mutex::new(None)),
             };
             app.manage(app_state);
 

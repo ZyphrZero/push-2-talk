@@ -426,6 +426,9 @@ pub struct AppConfig {
     /// 转录处理模式（默认普通模式）
     #[serde(default)]
     pub transcription_mode: TranscriptionMode,
+    /// 录音时自动静音其他应用
+    #[serde(default)]
+    pub enable_mute_other_apps: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -666,6 +669,7 @@ impl AppConfig {
             hotkey_config: None,
             dual_hotkey_config: DualHotkeyConfig::default(),
             transcription_mode: TranscriptionMode::default(),
+            enable_mute_other_apps: false,
         }
     }
 

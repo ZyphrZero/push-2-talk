@@ -36,7 +36,8 @@ import {
   BookOpen,
   KeyRound,
   ScrollText,
-  Github
+  Github,
+  VolumeX
 } from "lucide-react";
 import { nanoid } from 'nanoid';
 
@@ -150,6 +151,7 @@ interface AppConfig {
   close_action: "close" | "minimize" | null;
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;   // 新增：双热键配置
+  enable_mute_other_apps: boolean;        // 录音时静音其他应用
 }
 
 interface TranscriptionResult {
@@ -353,6 +355,7 @@ function App() {
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
   const [enableAutostart, setEnableAutostart] = useState(false);
+  const [enableMuteOtherApps, setEnableMuteOtherApps] = useState(false);
   const [closeAction, setCloseAction] = useState<"close" | "minimize" | null>(null);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready">("idle");
   const [updateInfo, setUpdateInfo] = useState<{ version: string; notes?: string } | null>(null);
@@ -508,7 +511,8 @@ function App() {
             smartCommandConfig,
             assistantConfig,
             asrConfig,
-            dualHotkeyConfig: newDualHotkeyConfig
+            dualHotkeyConfig: newDualHotkeyConfig,
+            enableMuteOtherApps
           }).then(() => {
             const modeName = recordingMode === 'dictation' ? '听写' : recordingMode === 'release' ? '松手' : 'AI助手';
             console.log(`${modeName}模式热键配置已保存:`, keysArray);
@@ -629,6 +633,9 @@ function App() {
         console.error("获取开机自启状态失败:", err);
       }
 
+      // 加载录音时静音其他应用的配置
+      setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
+
       // 自动启动时也需要传递 asrConfig、dualHotkeyConfig 和 assistantConfig
       const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
@@ -648,7 +655,8 @@ function App() {
           loadedSmartCommandConfig,
           loadedAssistantConfig,
           loadedAsrConfig,
-          loadedDualHotkeyConfig
+          loadedDualHotkeyConfig,
+          config.enable_mute_other_apps ?? false
         );
       }
     } catch (err) {
@@ -665,7 +673,8 @@ function App() {
     smartCmdCfg: SmartCommandConfig,
     assistantCfg: AssistantConfig,
     asrCfg: AsrConfig | null,
-    dualHotkeyCfg: DualHotkeyConfig
+    dualHotkeyCfg: DualHotkeyConfig,
+    enableMuteOtherAppsMode: boolean
   ) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -678,7 +687,8 @@ function App() {
         smartCommandConfig: smartCmdCfg,
         assistantConfig: assistantCfg,
         asrConfig: asrCfg,
-        dualHotkeyConfig: dualHotkeyCfg
+        dualHotkeyConfig: dualHotkeyCfg,
+        enableMuteOtherApps: enableMuteOtherAppsMode
       });
       setStatus("running");
       setError(null);
@@ -798,7 +808,8 @@ function App() {
         smartCommandConfig,
         assistantConfig,
         asrConfig,
-        dualHotkeyConfig
+        dualHotkeyConfig,
+        enableMuteOtherApps
       });
       setError(null);
       setShowSuccessToast(true);
@@ -942,7 +953,8 @@ function App() {
           assistantConfig,
           asrConfig,
           closeAction,
-          dualHotkeyConfig
+          dualHotkeyConfig,
+          enableMuteOtherApps
         });
         await invoke<string>("start_app", {
           apiKey,
@@ -953,7 +965,8 @@ function App() {
           smartCommandConfig,
           assistantConfig,
           asrConfig,
-          dualHotkeyConfig
+          dualHotkeyConfig,
+          enableMuteOtherApps
         });
         setStatus("running");
         setError(null);
@@ -2297,10 +2310,11 @@ function App() {
       {/* Settings Modal - 匹配当前界面风格 */}
       {showSettingsModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
+          {/* 增加 max-h-[85vh] 确保上下有留白，flex flex-col 支持内部滚动 */}
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
 
             {/* Modal Header - 与其他弹窗风格一致 */}
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-slate-50 to-gray-50">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-slate-50 to-gray-50 flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-slate-100 rounded-xl text-slate-600">
                   <Settings size={20} />
@@ -2318,8 +2332,8 @@ function App() {
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-4 space-y-3">
+            {/* Modal Body - flex-1 和 overflow-y-auto 启用内部滚动 */}
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
 
               {/* 快捷键配置 - 双模式 */}
               <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-100">
@@ -2526,176 +2540,215 @@ function App() {
                 )}
               </div>
 
-              {/* 服务配置入口 - 三个服务统一显示状态 */}
+              {/* 服务配置入口 - 分组列表风格，与系统设置统一 */}
               <div className="space-y-2">
                 <div className="text-xs font-medium text-slate-500 px-1">服务配置</div>
+                <div className="bg-slate-50/80 rounded-xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
 
-                {/* ASR 语音识别 */}
-                <button
-                  onClick={() => {
-                    setShowSettingsModal(false);
-                    setServiceModalTab('asr');
-                    setShowServiceModal(true);
-                  }}
-                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/50 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg transition-colors ${
-                      isAsrConfigValid(asrConfig.primary) ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'
-                    }`}>
-                      <Mic size={16} />
-                    </div>
-                    <div className="text-left">
-                      <div className="text-sm font-medium text-slate-700">ASR 语音识别</div>
-                      <div className="text-xs text-slate-400">
-                        {isAsrConfigValid(asrConfig.primary)
-                          ? `${ASR_PROVIDERS[asrConfig.primary.provider].name} · 已配置`
-                          : '未配置'}
+                  {/* ASR 语音识别 */}
+                  <button
+                    onClick={() => {
+                      setShowSettingsModal(false);
+                      setServiceModalTab('asr');
+                      setShowServiceModal(true);
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        isAsrConfigValid(asrConfig.primary) ? 'bg-blue-100 text-blue-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <Mic size={16} />
+                      </div>
+                      <div className="text-left">
+                        <div className="text-sm font-medium text-slate-700">ASR 语音识别</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {isAsrConfigValid(asrConfig.primary)
+                            ? `${ASR_PROVIDERS[asrConfig.primary.provider].name} · 已配置`
+                            : '未配置'}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
-                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                    <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="text-slate-300">
+                      <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
 
-                {/* LLM 润色 */}
-                <button
-                  onClick={() => {
-                    setShowSettingsModal(false);
-                    setServiceModalTab('llm');
-                    setShowServiceModal(true);
-                  }}
-                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-violet-200 hover:bg-violet-50/50 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg transition-colors ${
-                      llmConfig.api_key ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-400'
-                    }`}>
-                      <Wand2 size={16} />
-                    </div>
-                    <div className="text-left">
-                      <div className="text-sm font-medium text-slate-700">LLM 润色</div>
-                      <div className="text-xs text-slate-400">
-                        {llmConfig.api_key
-                          ? `${activePreset?.name || '文本润色'} · 已配置`
-                          : '未配置（可选）'}
+                  {/* LLM 润色 */}
+                  <button
+                    onClick={() => {
+                      setShowSettingsModal(false);
+                      setServiceModalTab('llm');
+                      setShowServiceModal(true);
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        llmConfig.api_key ? 'bg-violet-100 text-violet-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <Wand2 size={16} />
+                      </div>
+                      <div className="text-left">
+                        <div className="text-sm font-medium text-slate-700">LLM 润色</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {llmConfig.api_key
+                            ? `${activePreset?.name || '文本润色'} · 已配置`
+                            : '未配置（可选）'}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
-                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                    <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="text-slate-300">
+                      <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
 
-                {/* AI 助手 */}
-                <button
-                  onClick={() => {
-                    setShowSettingsModal(false);
-                    setServiceModalTab('assistant');
-                    setShowServiceModal(true);
-                  }}
-                  className="w-full flex items-center justify-between p-3 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/50 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg transition-colors ${
-                      assistantConfig.api_key ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'
-                    }`}>
-                      <MessageSquareQuote size={16} />
-                    </div>
-                    <div className="text-left">
-                      <div className="text-sm font-medium text-slate-700">AI 助手</div>
-                      <div className="text-xs text-slate-400">
-                        {assistantConfig.api_key
-                          ? `${formatHotkeyDisplay(dualHotkeyConfig.assistant)} · 已配置`
-                          : '未配置（可选）'}
+                  {/* AI 助手 */}
+                  <button
+                    onClick={() => {
+                      setShowSettingsModal(false);
+                      setServiceModalTab('assistant');
+                      setShowServiceModal(true);
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        assistantConfig.api_key ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <MessageSquareQuote size={16} />
+                      </div>
+                      <div className="text-left">
+                        <div className="text-sm font-medium text-slate-700">AI 助手</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {assistantConfig.api_key
+                            ? `${formatHotkeyDisplay(dualHotkeyConfig.assistant)} · 已配置`
+                            : '未配置（可选）'}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
-                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                    <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="text-slate-300">
+                      <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
 
-              {/* 开机自启动 */}
-              <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg transition-colors ${
-                    enableAutostart ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'
-                  }`}>
-                    <Power size={18} />
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-slate-700">开机自启动</div>
-                    <div className="text-xs text-slate-400">
-                      {enableAutostart ? '开机时自动启动应用' : '需要手动启动应用'}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={handleAutostartToggle}
-                  className={`relative w-14 h-7 rounded-full transition-all duration-300 ${
-                    enableAutostart ? 'bg-green-500' : 'bg-slate-300'
-                  } cursor-pointer hover:opacity-90`}
-                >
-                  <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-all duration-300 ${
-                    enableAutostart ? 'left-7' : 'left-0.5'
-                  }`} />
-                </button>
-              </div>
+              {/* 系统设置分组 */}
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-slate-500 px-1">系统设置</div>
+                <div className="bg-slate-50/80 rounded-xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
 
-              {/* 检查更新 */}
-              <button
-                onClick={() => {
-                  if (updateStatus === "available") {
-                    setShowSettingsModal(false);
-                    setShowUpdateModal(true);
-                  } else {
-                    handleCheckUpdate();
-                  }
-                }}
-                disabled={updateStatus === "checking" || updateStatus === "downloading"}
-                className="w-full flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-100/80 transition-all disabled:opacity-60"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg transition-colors ${
-                    updateStatus === "available"
-                      ? 'bg-green-100 text-green-600'
-                      : updateStatus === "checking"
-                      ? 'bg-blue-100 text-blue-600'
-                      : 'bg-slate-100 text-slate-400'
-                  }`}>
-                    {updateStatus === "checking" ? (
-                      <RefreshCw size={18} className="animate-spin" />
-                    ) : (
-                      <Download size={18} />
-                    )}
-                  </div>
-                  <div className="text-left">
-                    <div className="text-sm font-medium text-slate-700">检查更新</div>
-                    <div className="text-xs text-slate-400">
-                      {updateStatus === "available" && updateInfo
-                        ? `新版本 v${updateInfo.version} 可用`
-                        : updateStatus === "checking"
-                        ? '正在检查...'
-                        : '检查是否有新版本'}
+                  {/* 开机自启动 */}
+                  <div className="flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        enableAutostart ? 'bg-green-100 text-green-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <Power size={16} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">开机自启动</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {enableAutostart ? '随系统启动' : '手动启动'}
+                        </div>
+                      </div>
                     </div>
+                    <button
+                      onClick={handleAutostartToggle}
+                      className={`relative w-12 h-6 rounded-full transition-all duration-300 ${
+                        enableAutostart ? 'bg-green-500' : 'bg-slate-300'
+                      } cursor-pointer hover:opacity-90`}
+                    >
+                      <span
+                        className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300"
+                        style={{ left: enableAutostart ? 'calc(100% - 1.25rem - 2px)' : '2px' }}
+                      />
+                    </button>
                   </div>
+
+                  {/* 录音时静音其他应用 */}
+                  <div className="flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        enableMuteOtherApps ? 'bg-orange-100 text-orange-600' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        <VolumeX size={16} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">录音时静音其他应用</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {enableMuteOtherApps ? '录音期间自动静音' : '不干预音频'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setEnableMuteOtherApps(!enableMuteOtherApps)}
+                      disabled={status === "running"}
+                      className={`relative w-12 h-6 rounded-full transition-all duration-300 ${
+                        enableMuteOtherApps ? 'bg-orange-500' : 'bg-slate-300'
+                      } ${status === "running" ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-90'}`}
+                    >
+                      <span
+                        className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-all duration-300"
+                        style={{ left: enableMuteOtherApps ? 'calc(100% - 1.25rem - 2px)' : '2px' }}
+                      />
+                    </button>
+                  </div>
+
+                  {/* 检查更新 */}
+                  <button
+                    onClick={() => {
+                      if (updateStatus === "available") {
+                        setShowSettingsModal(false);
+                        setShowUpdateModal(true);
+                      } else {
+                        handleCheckUpdate();
+                      }
+                    }}
+                    disabled={updateStatus === "checking" || updateStatus === "downloading"}
+                    className="w-full flex items-center justify-between p-3.5 hover:bg-slate-100/80 transition-all text-left disabled:opacity-60"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`p-1.5 rounded-lg transition-colors ${
+                        updateStatus === "available"
+                          ? 'bg-green-100 text-green-600'
+                          : updateStatus === "checking"
+                          ? 'bg-blue-100 text-blue-600'
+                          : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        {updateStatus === "checking" ? (
+                          <RefreshCw size={16} className="animate-spin" />
+                        ) : (
+                          <Download size={16} />
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">检查更新</div>
+                        <div className="text-[11px] text-slate-400 leading-tight">
+                          {updateStatus === "available" && updateInfo
+                            ? `发现新版本 v${updateInfo.version}`
+                            : updateStatus === "checking"
+                            ? '正在连接服务器...'
+                            : '当前版本 v1.0.1'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {updateStatus === "available" && (
+                        <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                      )}
+                      <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="text-slate-300">
+                        <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  {updateStatus === "available" && (
-                    <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                  )}
-                  <svg width="8" height="14" viewBox="0 0 8 14" fill="none" className="text-slate-300">
-                    <path d="M1 1L7 7L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </div>
-              </button>
+              </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100">
+            <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100 flex-shrink-0">
               <p className="text-xs text-slate-400 text-center">
                 听写: {formatHotkeyDisplay(dualHotkeyConfig.dictation)} · AI助手: {formatHotkeyDisplay(dualHotkeyConfig.assistant)}
               </p>

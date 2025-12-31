@@ -1,6 +1,6 @@
 [package]
 name = "push-to-talk"
-version = "1.0.0"
+version = "1.0.1"
 description = "A push-to-talk speech-to-text application"
 authors = ["you"]
 license = ""
@@ -60,6 +60,14 @@ tauri-plugin-process = "2"
 
 # 打开外部链接
 tauri-plugin-opener = "2"
+
+# Windows Audio Session API - 录音时静音其他应用
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_Foundation",
+] }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
