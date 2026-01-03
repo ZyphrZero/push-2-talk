@@ -170,14 +170,6 @@ jobs:
           releaseName: 'v__VERSION__'
           releaseBody: |
             ${{ steps.changelog.outputs.changelog }}
-
-            ## 下载安装
-            - **Windows**: 下载 `.exe` 安装包
-            - 安装后需以管理员身份运行
-            - 应用内支持自动更新
-
-            ---
-            自动构建 by GitHub Actions
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

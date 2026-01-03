@@ -2268,6 +2268,15 @@ function App() {
                   <p className="text-sm text-slate-600 whitespace-pre-wrap">{updateInfo.notes}</p>
                 </div>
               )}
+              <p className="text-xs text-slate-400">
+                查看完整更新日志：
+                <button
+                  onClick={() => openUrl("https://ncn18msloi7t.feishu.cn/wiki/EmTFwwtIfigqQDkXjBIc3oDonPd")}
+                  className="text-blue-500 hover:text-blue-600 hover:underline ml-1"
+                >
+                  更新日志
+                </button>
+              </p>
 
               {updateStatus === "downloading" && (
                 <div className="space-y-2">
