@@ -7,7 +7,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level};
+use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc, is_voice_active};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -137,6 +137,15 @@ impl StreamingRecorder {
         let level_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
         let level_counter_clone = Arc::clone(&level_counter);
 
+        // VAD 拖尾计数器：检测到静音后继续发送几个块，防止句尾吞字
+        let vad_hangover: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let vad_hangover_clone = Arc::clone(&vad_hangover);
+        const HANGOVER_CHUNKS: usize = 3; // 3块 * 0.2s = 0.6秒拖尾
+
+        // AGC 增益状态，用于平滑过渡
+        let agc_gain: Arc<Mutex<f32>> = Arc::new(Mutex::new(1.0));
+        let agc_gain_clone = Arc::clone(&agc_gain);
+
         // 克隆 app_handle 用于闭包
         let app_handle_f32 = app_handle.clone();
 
@@ -177,7 +186,31 @@ impl StreamingRecorder {
 
                     // 当累积足够样本时，发送块
                     while pending.len() >= CHUNK_SAMPLES {
-                        let chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+                        let mut chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+
+                        // VAD 判断
+                        let is_active = is_voice_active(&chunk);
+                        let mut hangover = vad_hangover_clone.lock().unwrap();
+
+                        if is_active {
+                            *hangover = HANGOVER_CHUNKS;
+                        } else if *hangover > 0 {
+                            *hangover -= 1;
+                        }
+
+                        // 静音且拖尾结束，丢弃前先衰减增益
+                        if !is_active && *hangover == 0 {
+                            let mut gain = agc_gain_clone.lock().unwrap();
+                            *gain = *gain * 0.5 + 0.5;
+                            continue;
+                        }
+                        drop(hangover);
+
+                        // AGC（带平滑处理）
+                        let mut gain = agc_gain_clone.lock().unwrap();
+                        apply_agc(&mut chunk, &mut gain);
+                        drop(gain);
+
                         let chunk_i16 = Self::f32_to_i16(&chunk);
 
                         if chunk_tx.try_send(chunk_i16).is_err() {
@@ -195,6 +228,8 @@ impl StreamingRecorder {
                 let chunk_tx_i16 = chunk_tx.clone();
                 let level_counter_i16 = Arc::clone(&level_counter);
                 let app_handle_i16 = app_handle.clone();
+                let vad_hangover_i16 = Arc::clone(&vad_hangover);
+                let agc_gain_i16 = Arc::clone(&agc_gain);
 
                 device.build_input_stream(
                     &config,
@@ -230,7 +265,31 @@ impl StreamingRecorder {
                         pending.extend(resampled);
 
                         while pending.len() >= CHUNK_SAMPLES {
-                            let chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+                            let mut chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+
+                            // VAD 判断
+                            let is_active = is_voice_active(&chunk);
+                            let mut hangover = vad_hangover_i16.lock().unwrap();
+
+                            if is_active {
+                                *hangover = HANGOVER_CHUNKS;
+                            } else if *hangover > 0 {
+                                *hangover -= 1;
+                            }
+
+                            // 静音且拖尾结束，丢弃前先衰减增益
+                            if !is_active && *hangover == 0 {
+                                let mut gain = agc_gain_i16.lock().unwrap();
+                                *gain = *gain * 0.5 + 0.5;
+                                continue;
+                            }
+                            drop(hangover);
+
+                            // AGC（带平滑处理）
+                            let mut gain = agc_gain_i16.lock().unwrap();
+                            apply_agc(&mut chunk, &mut gain);
+                            drop(gain);
+
                             let chunk_i16 = Self::f32_to_i16(&chunk);
 
                             if chunk_tx_i16.try_send(chunk_i16).is_err() {
@@ -249,6 +308,8 @@ impl StreamingRecorder {
                 let chunk_tx_u16 = chunk_tx.clone();
                 let level_counter_u16 = Arc::clone(&level_counter);
                 let app_handle_u16 = app_handle;
+                let vad_hangover_u16 = Arc::clone(&vad_hangover);
+                let agc_gain_u16 = Arc::clone(&agc_gain);
 
                 device.build_input_stream(
                     &config,
@@ -284,7 +345,31 @@ impl StreamingRecorder {
                         pending.extend(resampled);
 
                         while pending.len() >= CHUNK_SAMPLES {
-                            let chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+                            let mut chunk: Vec<f32> = pending.drain(..CHUNK_SAMPLES).collect();
+
+                            // VAD 判断
+                            let is_active = is_voice_active(&chunk);
+                            let mut hangover = vad_hangover_u16.lock().unwrap();
+
+                            if is_active {
+                                *hangover = HANGOVER_CHUNKS;
+                            } else if *hangover > 0 {
+                                *hangover -= 1;
+                            }
+
+                            // 静音且拖尾结束，丢弃前先衰减增益
+                            if !is_active && *hangover == 0 {
+                                let mut gain = agc_gain_u16.lock().unwrap();
+                                *gain = *gain * 0.5 + 0.5;
+                                continue;
+                            }
+                            drop(hangover);
+
+                            // AGC（带平滑处理）
+                            let mut gain = agc_gain_u16.lock().unwrap();
+                            apply_agc(&mut chunk, &mut gain);
+                            drop(gain);
+
                             let chunk_i16 = Self::f32_to_i16(&chunk);
 
                             if chunk_tx_u16.try_send(chunk_i16).is_err() {

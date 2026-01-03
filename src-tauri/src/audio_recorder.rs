@@ -7,7 +7,7 @@ use anyhow::Result;
 use cpal::Stream;
 use tauri::AppHandle;
 
-use crate::audio_utils::{calculate_audio_level, emit_audio_level};
+use crate::audio_utils::{calculate_audio_level, emit_audio_level, apply_agc};
 
 // API 要求的目标采样率
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -227,11 +227,17 @@ impl AudioRecorder {
         tracing::info!("转单声道: {} -> {} 样本", original_len, mono_audio.len());
 
         // 2. 降采样到 16kHz
-        let resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        let mut resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
         tracing::info!("降采样: {}Hz -> {}Hz, {} -> {} 样本",
             self.device_sample_rate, TARGET_SAMPLE_RATE, mono_audio.len(), resampled_audio.len());
 
-        // 3. 写入内存中的 WAV 格式
+        // 3. AGC 处理（按块处理以保持平滑）
+        let mut current_gain = 1.0;
+        for chunk in resampled_audio.chunks_mut(3200) {
+            apply_agc(chunk, &mut current_gain);
+        }
+
+        // 4. 写入内存中的 WAV 格式
         let spec = WavSpec {
             channels: 1,
             sample_rate: TARGET_SAMPLE_RATE,
@@ -275,7 +281,13 @@ impl AudioRecorder {
         let mono_audio = self.to_mono(&raw_audio, self.channels);
 
         // 2. 降采样到 16kHz
-        let resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+        let mut resampled_audio = self.resample(&mono_audio, self.device_sample_rate, TARGET_SAMPLE_RATE);
+
+        // 3. AGC 处理（按块处理以保持平滑）
+        let mut current_gain = 1.0;
+        for chunk in resampled_audio.chunks_mut(3200) {
+            apply_agc(chunk, &mut current_gain);
+        }
 
         // 保存音频文件
         let temp_dir = std::env::temp_dir();

@@ -37,3 +37,42 @@ pub fn calculate_audio_level(samples: &[f32]) -> f32 {
 pub fn emit_audio_level(app: &AppHandle, level: f32) {
     let _ = app.emit("audio_level_update", AudioLevelPayload { level });
 }
+
+/// 计算原始 RMS（不带归一化）
+pub fn calculate_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() { return 0.0; }
+    let sum: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// AGC：自动增益控制（带平滑处理）
+/// current_gain: 当前增益状态，用于平滑过渡
+pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
+    const TARGET_RMS: f32 = 0.15;
+    const MAX_GAIN: f32 = 3.0;
+    const MIN_GAIN: f32 = 0.1;   // 允许大幅衰减，压住大嗓门
+    const NOISE_FLOOR: f32 = 0.005;
+
+    let rms = calculate_rms(samples);
+
+    // 计算目标增益，底噪时保持 1.0
+    let target_gain = if rms < NOISE_FLOOR {
+        1.0
+    } else {
+        (TARGET_RMS / rms).clamp(MIN_GAIN, MAX_GAIN)
+    };
+
+    // 增益平滑：Attack 快（防爆音），Release 慢（防呼吸效应）
+    let alpha = if target_gain < *current_gain { 0.5 } else { 0.1 };
+    *current_gain = *current_gain * (1.0 - alpha) + target_gain * alpha;
+
+    for s in samples.iter_mut() {
+        *s = (*s * *current_gain).tanh();
+    }
+}
+
+/// VAD：基于 RMS 阈值判断是否有语音
+pub fn is_voice_active(samples: &[f32]) -> bool {
+    const THRESHOLD: f32 = 0.005; // 与 NOISE_FLOOR 对齐，宁可多发也不丢人声
+    calculate_rms(samples) > THRESHOLD
+}
