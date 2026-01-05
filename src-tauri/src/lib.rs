@@ -36,6 +36,52 @@ use tauri::{
     WindowEvent,
 };
 
+// ================== Windows 鼠标位置检测 ==================
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn GetCursorPos(lpPoint: *mut POINT) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct POINT {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(target_os = "windows")]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    let mut point = POINT { x: 0, y: 0 };
+    unsafe {
+        if GetCursorPos(&mut point) != 0 {
+            Some((point.x, point.y))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let (cursor_x, cursor_y) = get_cursor_position()?;
+    let monitors = window.available_monitors().ok()?;
+
+    for monitor in monitors {
+        let pos = monitor.position();
+        let size = monitor.size();
+        if cursor_x >= pos.x && cursor_x < pos.x + size.width as i32
+           && cursor_y >= pos.y && cursor_y < pos.y + size.height as i32 {
+            return Some(monitor);
+        }
+    }
+    window.primary_monitor().ok().flatten()
+}
+
 // 全局应用状态
 struct AppState {
     audio_recorder: Arc<Mutex<Option<AudioRecorder>>>,
@@ -166,20 +212,19 @@ async fn handle_recording_start(
 
     let _ = app.emit("recording_started", ());
 
-    // 显示录音悬浮窗并移动到屏幕底部居中
+    // 显示录音悬浮窗并移动到鼠标所在屏幕底部居中
     if let Some(overlay) = app.get_webview_window("overlay") {
-        if let Some(monitor) = overlay.primary_monitor().ok().flatten() {
+        if let Some(monitor) = find_monitor_at_cursor(&overlay) {
+            let monitor_pos = monitor.position();
             let screen_size = monitor.size();
             let scale_factor = monitor.scale_factor();
             let overlay_size = overlay.outer_size().unwrap_or(tauri::PhysicalSize::new(120, 44));
 
-            let x = ((screen_size.width as f64 / scale_factor) / 2.0 - (overlay_size.width as f64 / scale_factor) / 2.0) as i32;
-            let y = ((screen_size.height as f64 / scale_factor) - (overlay_size.height as f64 / scale_factor) - 100.0) as i32;
+            // 全程使用物理像素计算
+            let x = monitor_pos.x + (screen_size.width as i32 - overlay_size.width as i32) / 2;
+            let y = monitor_pos.y + screen_size.height as i32 - overlay_size.height as i32 - (100.0 * scale_factor) as i32;
 
-            let _ = overlay.set_position(tauri::PhysicalPosition::new(
-                (x as f64 * scale_factor) as i32,
-                (y as f64 * scale_factor) as i32
-            ));
+            let _ = overlay.set_position(tauri::PhysicalPosition::new(x, y));
         }
         let _ = overlay.show();
     }
