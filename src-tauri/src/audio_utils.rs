@@ -48,10 +48,10 @@ pub fn calculate_rms(samples: &[f32]) -> f32 {
 /// AGC：自动增益控制（带平滑处理）
 /// current_gain: 当前增益状态，用于平滑过渡
 pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
-    const TARGET_RMS: f32 = 0.15;
-    const MAX_GAIN: f32 = 3.0;
-    const MIN_GAIN: f32 = 0.1;   // 允许大幅衰减，压住大嗓门
-    const NOISE_FLOOR: f32 = 0.005;
+    const TARGET_RMS: f32 = 0.10;   // 目标 RMS，平衡小声音放大
+    const MAX_GAIN: f32 = 5.0;      // 最大增益，平衡微弱声音和抗噪能力
+    const MIN_GAIN: f32 = 0.1;      // 允许大幅衰减，压住大嗓门
+    const NOISE_FLOOR: f32 = 0.003; // 底噪阈值，平衡灵敏度和抗噪能力
 
     let rms = calculate_rms(samples);
 
@@ -73,6 +73,6 @@ pub fn apply_agc(samples: &mut [f32], current_gain: &mut f32) {
 
 /// VAD：基于 RMS 阈值判断是否有语音
 pub fn is_voice_active(samples: &[f32]) -> bool {
-    const THRESHOLD: f32 = 0.005; // 与 NOISE_FLOOR 对齐，宁可多发也不丢人声
+    const THRESHOLD: f32 = 0.003; // 与 NOISE_FLOOR 对齐，平衡灵敏度和抗噪能力
     calculate_rms(samples) > THRESHOLD
 }

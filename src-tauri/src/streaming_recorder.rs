@@ -140,7 +140,7 @@ impl StreamingRecorder {
         // VAD 拖尾计数器：检测到静音后继续发送几个块，防止句尾吞字
         let vad_hangover: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let vad_hangover_clone = Arc::clone(&vad_hangover);
-        const HANGOVER_CHUNKS: usize = 3; // 3块 * 0.2s = 0.6秒拖尾
+        const HANGOVER_CHUNKS: usize = 3; // 3块 * 0.2s = 0.6秒拖尾，平衡防吞字和响应速度
 
         // AGC 增益状态，用于平滑过渡
         let agc_gain: Arc<Mutex<f32>> = Arc::new(Mutex::new(1.0));
