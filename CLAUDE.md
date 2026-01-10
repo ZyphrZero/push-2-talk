@@ -38,6 +38,11 @@ PushToTalk is a desktop application built with Tauri 2.0 that enables voice-to-t
 - **System Tray**: Minimize to tray on close, auto-start on boot support
 - **Multi-Configuration**: Save and switch between different LLM prompt presets
 - **Auto-Update**: Tauri Plugin Updater v2 with 6 mirror endpoints for reliable updates
+- **Personal Dictionary**: Custom hotword list for improved recognition of professional terms
+- **VAD (Voice Activity Detection)**: Smart silence detection with hangover mechanism to prevent word clipping
+- **AGC (Automatic Gain Control)**: Auto volume adjustment for better recognition of soft speech
+- **Mute Other Apps**: Optional feature to mute other applications during recording
+- **Multi-Monitor Support**: Overlay window automatically adapts to multi-display environments
 
 ## Development Commands
 
@@ -98,13 +103,19 @@ The Rust backend is organized into independent modules that communicate through 
    - For WebSocket-based realtime ASR (Qwen/Doubao)
    - Emits audio chunks via callback for low-latency transmission
    - Includes audio visualization data (RMS levels) for overlay window
+   - **VAD integration**: Silence detection with 3-chunk hangover (0.6s) to prevent word clipping
+   - **AGC integration**: Automatic gain control for consistent audio levels
 
 4. **asr/** - Multi-provider ASR module (refactored architecture)
    - **asr/http/qwen.rs** - Qwen HTTP mode (multimodal-generation endpoint)
+     - Supports personal dictionary via `vocabulary` parameter
    - **asr/http/doubao.rs** - Doubao HTTP mode
+     - Supports personal dictionary via `additions` parameter
    - **asr/http/sensevoice.rs** - SiliconFlow SenseVoice fallback
    - **asr/realtime/qwen.rs** - Qwen WebSocket realtime mode
+     - Supports personal dictionary via `vocabulary` in transcription config
    - **asr/realtime/doubao.rs** - Doubao WebSocket realtime mode
+     - Supports personal dictionary via `additions` parameter
    - **asr/race_strategy.rs** - Parallel ASR request racing with automatic fallback
      - Primary ASR (Qwen/Doubao) retries up to 2 times with 500ms delay
      - SenseVoice runs in parallel background thread
@@ -138,7 +149,11 @@ The Rust backend is organized into independent modules that communicate through 
    - **Focus management**: 150ms delay before text insertion to restore window focus (for toggle mode)
 
 9. **audio_utils.rs** - Audio processing utilities
-   - VAD (Voice Activity Detection) for silence trimming
+   - **VAD (Voice Activity Detection)**: RMS-based silence detection with 0.003 threshold
+   - **AGC (Automatic Gain Control)**: Automatic volume normalization
+     - Target RMS: 0.10, Max gain: 5.0×, Min gain: 0.1×
+     - Smooth transitions: fast attack (0.5), slow release (0.1)
+     - Noise floor: 0.003 (below this, gain stays at 1.0)
    - RMS calculation for waveform visualization (×1.5 amplification for normal, ×1.8 for locked)
    - Audio format conversion helpers
    - Smooth transitions: 70%/30% on rise, 40%/60% on fall
@@ -153,6 +168,8 @@ The Rust backend is organized into independent modules that communicate through 
     - **Backward compatibility** for SmartCommandConfig → AssistantConfig
     - Supports multiple LLM prompt presets with custom names
     - Manages minimize-to-tray and auto-start preferences
+    - **Personal dictionary**: Custom hotword list (`dictionary: Vec<String>`)
+    - **Mute other apps**: `enable_mute_other_apps` option
     - Uses `dirs` crate for cross-platform app data directory
 
 12. **pipeline/** - Processing pipeline framework
@@ -335,7 +352,7 @@ The `AppState` struct manages shared mutable state across all services using `Ar
 - **Ed25519 Signature**: Public key verification for security
 - **Artifact Creation**: `createUpdaterArtifacts: true` in tauri.conf.json
 - **Update Flow**: Check → Download → Verify → Install → Restart
-- **Current Version**: 0.0.14
+- **Current Version**: 1.0.4
 
 ## Important Implementation Details
 
@@ -516,6 +533,8 @@ Config file location: `%APPDATA%\PushToTalk\config.json`
     "qa_system_prompt": "You are a helpful assistant...",
     "text_processing_system_prompt": "You are an expert text editor..."
   },
+  "dictionary": ["专业术语1", "人名", "地名"],
+  "enable_mute_other_apps": false,
   "minimize_to_tray": true,
   "transcription_mode": "Dictation"
 }
