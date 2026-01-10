@@ -12,14 +12,16 @@ pub struct QwenASRClient {
     api_key: String,
     client: reqwest::Client,
     max_retries: u32,
+    dictionary: Vec<String>,
 }
 
 impl QwenASRClient {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
         Self {
             api_key,
             client: utils::create_http_client(),
             max_retries: MAX_RETRIES,
+            dictionary,
         }
     }
 
@@ -51,13 +53,21 @@ impl QwenASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("音频数据大小: {} bytes", audio_data.len());
 
+        // 词库用顿号分隔
+        let corpus_text = self.dictionary.join("、");
+        if !corpus_text.is_empty() {
+            tracing::info!("Qwen HTTP ASR 词库: {} 个词, corpus={}", self.dictionary.len(), corpus_text);
+        } else {
+            tracing::info!("Qwen HTTP ASR 词库: 未配置");
+        }
+
         let request_body = serde_json::json!({
             "model": MODEL,
             "input": {
                 "messages": [
                     {
                         "role": "system",
-                        "content": [{"text": ""}]
+                        "content": [{"text": corpus_text}]
                     },
                     {
                         "role": "user",

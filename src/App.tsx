@@ -38,7 +38,8 @@ import {
   KeyRound,
   ScrollText,
   Github,
-  VolumeX
+  VolumeX,
+  BookText
 } from "lucide-react";
 import { nanoid } from 'nanoid';
 
@@ -153,6 +154,7 @@ interface AppConfig {
   hotkey_config: HotkeyConfig;            // 保留用于迁移
   dual_hotkey_config: DualHotkeyConfig;   // 新增：双热键配置
   enable_mute_other_apps: boolean;        // 录音时静音其他应用
+  dictionary: string[];                   // 个人词典（热词列表）
 }
 
 interface TranscriptionResult {
@@ -340,7 +342,7 @@ function App() {
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   // 统一服务配置弹窗
   const [showServiceModal, setShowServiceModal] = useState(false);
-  const [serviceModalTab, setServiceModalTab] = useState<'asr' | 'llm' | 'assistant'>('asr');
+  const [serviceModalTab, setServiceModalTab] = useState<'asr' | 'llm' | 'assistant' | 'dictionary'>('asr');
   // smartCommandConfig 保留用于向后兼容（加载旧配置时不会报错），使用常量替代 useState
   const smartCommandConfig = DEFAULT_SMART_COMMAND_CONFIG;
   const [showApiKey, setShowApiKey] = useState(false);
@@ -355,6 +357,12 @@ function App() {
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  // 个人词典状态
+  const [dictionary, setDictionary] = useState<string[]>([]);
+  const [newWord, setNewWord] = useState('');
+  const [duplicateHint, setDuplicateHint] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingValue, setEditingValue] = useState('');
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [rememberChoice, setRememberChoice] = useState(false);
@@ -647,6 +655,10 @@ function App() {
       // 加载录音时静音其他应用的配置
       setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
 
+      // 加载个人词典
+      const loadedDictionary = (config.dictionary && Array.isArray(config.dictionary)) ? config.dictionary : [];
+      setDictionary(loadedDictionary);
+
       // 自动启动时也需要传递 asrConfig、dualHotkeyConfig 和 assistantConfig
       const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
@@ -667,7 +679,8 @@ function App() {
           loadedAssistantConfig,
           loadedAsrConfig,
           loadedDualHotkeyConfig,
-          config.enable_mute_other_apps ?? false
+          config.enable_mute_other_apps ?? false,
+          loadedDictionary
         );
       }
     } catch (err) {
@@ -685,7 +698,8 @@ function App() {
     assistantCfg: AssistantConfig,
     asrCfg: AsrConfig | null,
     dualHotkeyCfg: DualHotkeyConfig,
-    enableMuteOtherAppsMode: boolean
+    enableMuteOtherAppsMode: boolean,
+    dict: string[]
   ) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -699,7 +713,8 @@ function App() {
         assistantConfig: assistantCfg,
         asrConfig: asrCfg,
         dualHotkeyConfig: dualHotkeyCfg,
-        enableMuteOtherApps: enableMuteOtherAppsMode
+        enableMuteOtherApps: enableMuteOtherAppsMode,
+        dictionary: dict
       });
       setStatus("running");
       setError(null);
@@ -808,8 +823,63 @@ function App() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // 词典操作函数
+  const handleAddWord = () => {
+    const word = newWord.trim();
+    if (!word) return;
+    if (dictionary.includes(word)) {
+      setDuplicateHint(true);
+      setTimeout(() => setDuplicateHint(false), 2000);
+      return;
+    }
+    setDictionary(prev => [...prev, word]);
+    setNewWord('');
+  };
+
+  const handleDeleteWord = (index: number) => {
+    setDictionary(prev => prev.filter((_, i) => i !== index));
+    if (editingIndex === index) {
+      // 删除的是正在编辑的词条，取消编辑
+      setEditingIndex(null);
+      setEditingValue('');
+    } else if (editingIndex !== null && index < editingIndex) {
+      // 删除的词条在编辑词条之前，需要调整索引
+      setEditingIndex(editingIndex - 1);
+    }
+  };
+
+  const handleStartEdit = (index: number) => {
+    setEditingIndex(index);
+    setEditingValue(dictionary[index]);
+  };
+
+  const handleSaveEdit = () => {
+    if (editingIndex !== null) {
+      const word = editingValue.trim();
+      // 检查是否与其他词条重复（排除当前编辑的词条）
+      const isDuplicate = dictionary.some((w, i) => i !== editingIndex && w === word);
+      if (isDuplicate) {
+        setDuplicateHint(true);
+        setTimeout(() => setDuplicateHint(false), 2000);
+        return;
+      }
+      if (word) {
+        setDictionary(prev => prev.map((w, i) => i === editingIndex ? word : w));
+      }
+      setEditingIndex(null);
+      setEditingValue('');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingIndex(null);
+    setEditingValue('');
+  };
+
   const handleSaveConfig = async () => {
     try {
+      // 过滤空词条
+      const validDictionary = dictionary.filter(w => w.trim());
       await invoke<string>("save_config", {
         apiKey,
         fallbackApiKey,
@@ -820,8 +890,30 @@ function App() {
         assistantConfig,
         asrConfig,
         dualHotkeyConfig,
-        enableMuteOtherApps
+        enableMuteOtherApps,
+        dictionary: validDictionary
       });
+      // 更新本地状态（移除空词条）
+      setDictionary(validDictionary);
+
+      // 如果服务正在运行，重启以应用新词库
+      if (status === "running") {
+        await invoke<string>("stop_app");
+        await invoke<string>("start_app", {
+          apiKey,
+          fallbackApiKey,
+          useRealtime,
+          enablePostProcess,
+          llmConfig,
+          smartCommandConfig,
+          assistantConfig,
+          asrConfig,
+          dualHotkeyConfig,
+          enableMuteOtherApps,
+          dictionary: validDictionary
+        });
+      }
+
       setError(null);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
@@ -965,7 +1057,8 @@ function App() {
           asrConfig,
           closeAction,
           dualHotkeyConfig,
-          enableMuteOtherApps
+          enableMuteOtherApps,
+          dictionary
         });
         await invoke<string>("start_app", {
           apiKey,
@@ -977,7 +1070,8 @@ function App() {
           assistantConfig,
           asrConfig,
           dualHotkeyConfig,
-          enableMuteOtherApps
+          enableMuteOtherApps,
+          dictionary
         });
         setStatus("running");
         setError(null);
@@ -1181,6 +1275,14 @@ function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* 词典按钮 */}
+            <button
+              onClick={() => { setServiceModalTab('dictionary'); setShowServiceModal(true); }}
+              className="p-2 rounded-lg bg-slate-100 hover:bg-orange-100 text-slate-400 hover:text-orange-600 transition-all"
+              title="个人词典"
+            >
+              <BookText size={18} />
+            </button>
             {/* 设置按钮 */}
             <button
               onClick={() => setShowSettingsModal(true)}
@@ -1613,6 +1715,17 @@ function App() {
                   <MessageSquareQuote size={16} />
                   AI 助手
                 </button>
+                <button
+                  onClick={() => setServiceModalTab('dictionary')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    serviceModalTab === 'dictionary'
+                      ? 'bg-white text-orange-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <BookText size={16} />
+                  个人词典
+                </button>
               </div>
             </div>
 
@@ -1982,6 +2095,109 @@ function App() {
                   </div>
                 </div>
               )}
+
+              {/* Dictionary Tab */}
+              {serviceModalTab === 'dictionary' && (
+                <div className="h-full overflow-y-auto p-6 space-y-6">
+                  {/* 提示信息 */}
+                  <div className="flex items-center gap-2 p-3 bg-orange-50 border border-orange-100 rounded-xl text-xs text-orange-700">
+                    <AlertCircle size={14} className="flex-shrink-0" />
+                    <span>添加常用词汇（专业术语、人名、产品名等），提升语音识别准确率</span>
+                  </div>
+
+                  {/* 添加词条 */}
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newWord}
+                        onChange={(e) => { setNewWord(e.target.value); setDuplicateHint(false); }}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddWord()}
+                        className={`flex-1 px-4 py-2.5 bg-white border rounded-xl text-sm focus:outline-none focus:ring-2 transition-all ${
+                          duplicateHint
+                            ? 'border-red-300 focus:ring-red-500/20 focus:border-red-500'
+                            : 'border-slate-200 focus:ring-orange-500/20 focus:border-orange-500'
+                        }`}
+                        placeholder="输入词汇，按回车添加"
+                      />
+                      <button
+                        onClick={handleAddWord}
+                        disabled={!newWord.trim()}
+                        className="px-4 py-2.5 bg-orange-500 text-white text-sm font-medium rounded-xl hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        <Plus size={16} />
+                        添加
+                      </button>
+                    </div>
+                    {duplicateHint && (
+                      <p className="text-xs text-red-500 pl-1">该词汇已存在</p>
+                    )}
+                  </div>
+
+                  {/* 词条列表 - 气囊/标签云布局 */}
+                  {dictionary.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-slate-300 space-y-3">
+                      <BookText size={48} strokeWidth={1} />
+                      <p className="text-sm text-slate-400">暂无词条</p>
+                      <p className="text-xs text-slate-300">添加常用词汇，让语音识别更准确</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="text-xs text-slate-500 mb-3">共 {dictionary.length} 个词条</div>
+                      <div className="flex flex-wrap gap-2">
+                        {dictionary.map((word, index) => (
+                          editingIndex === index ? (
+                            /* 编辑模式 */
+                            <div key={index} className="flex items-center gap-1 px-2 py-1 bg-white border-2 border-orange-400 rounded-full shadow-sm">
+                              <input
+                                type="text"
+                                value={editingValue}
+                                onChange={(e) => setEditingValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveEdit();
+                                  if (e.key === 'Escape') handleCancelEdit();
+                                }}
+                                className="w-24 px-2 py-0.5 bg-transparent text-sm focus:outline-none text-slate-700"
+                                autoFocus
+                              />
+                              <button onClick={handleSaveEdit} className="p-0.5 text-emerald-600 hover:text-emerald-700" title="保存">
+                                <CheckCircle2 size={14} />
+                              </button>
+                              <button onClick={handleCancelEdit} className="p-0.5 text-slate-400 hover:text-slate-600" title="取消">
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ) : (
+                            /* 显示模式 - 气囊样式 */
+                            <div
+                              key={index}
+                              className="group flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-full text-sm text-slate-700 hover:border-orange-300 hover:shadow-sm transition-all cursor-default"
+                            >
+                              <span className="font-medium" onDoubleClick={() => handleStartEdit(index)}>{word}</span>
+                              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={() => handleStartEdit(index)}
+                                  className="p-0.5 text-slate-400 hover:text-orange-500 transition-colors"
+                                  title="编辑"
+                                >
+                                  <Wand2 size={12} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteWord(index)}
+                                  className="p-0.5 text-slate-400 hover:text-red-500 transition-colors"
+                                  title="删除"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Modal Footer */}
@@ -2000,7 +2216,8 @@ function App() {
                 className={`px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-lg transition-all ${
                   serviceModalTab === 'asr' ? 'bg-blue-500 hover:bg-blue-600 shadow-blue-500/20' :
                   serviceModalTab === 'llm' ? 'bg-violet-500 hover:bg-violet-600 shadow-violet-500/20' :
-                  'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/20'
+                  serviceModalTab === 'assistant' ? 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-500/20' :
+                  'bg-orange-500 hover:bg-orange-600 shadow-orange-500/20'
                 }`}
               >
                 保存并应用

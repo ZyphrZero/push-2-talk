@@ -429,6 +429,9 @@ pub struct AppConfig {
     /// 录音时自动静音其他应用
     #[serde(default)]
     pub enable_mute_other_apps: bool,
+    /// 个人词典（热词列表）
+    #[serde(default)]
+    pub dictionary: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -670,6 +673,7 @@ impl AppConfig {
             dual_hotkey_config: DualHotkeyConfig::default(),
             transcription_mode: TranscriptionMode::default(),
             enable_mute_other_apps: false,
+            dictionary: Vec::new(),
         }
     }
 

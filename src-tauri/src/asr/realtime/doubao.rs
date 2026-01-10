@@ -56,11 +56,12 @@ impl DoubaoRealtimeSession {
 pub struct DoubaoRealtimeClient {
     app_id: String,
     access_key: String,
+    dictionary: Vec<String>,
 }
 
 impl DoubaoRealtimeClient {
-    pub fn new(app_id: String, access_key: String) -> Self {
-        Self { app_id, access_key }
+    pub fn new(app_id: String, access_key: String, dictionary: Vec<String>) -> Self {
+        Self { app_id, access_key, dictionary }
     }
 
     pub async fn start_session(&self) -> Result<DoubaoRealtimeSession> {
@@ -84,10 +85,24 @@ impl DoubaoRealtimeClient {
         let (mut write, mut read) = ws_stream.split();
 
         // 发送 Full Client Request
+        let mut request_obj = serde_json::json!({"model_name": "bigmodel", "enable_itn": true, "enable_punc": true});
+
+        // 添加词库支持
+        if !self.dictionary.is_empty() {
+            let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+                .map(|w| serde_json::json!({"word": w}))
+                .collect();
+            let context = serde_json::json!({"hotwords": hotwords}).to_string();
+            tracing::info!("豆包流式 ASR 词库: {} 个词, context={}", self.dictionary.len(), context);
+            request_obj["corpus"] = serde_json::json!({"context": context});
+        } else {
+            tracing::info!("豆包流式 ASR 词库: 未配置");
+        }
+
         let config = serde_json::json!({
             "user": {"uid": &self.app_id},
             "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1},
-            "request": {"model_name": "bigmodel", "enable_itn": true, "enable_punc": true}
+            "request": request_obj
         });
         tracing::debug!("豆包 Full Client Request: {}", serde_json::to_string_pretty(&config)?);
         let msg = build_message(0x1, 0x1, 1, &serde_json::to_vec(&config)?, 0x1)?;  // Gzip 压缩

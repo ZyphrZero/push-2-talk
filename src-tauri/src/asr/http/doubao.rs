@@ -10,20 +10,40 @@ pub struct DoubaoASRClient {
     app_id: String,
     access_key: String,
     client: reqwest::Client,
+    dictionary: Vec<String>,
 }
 
 impl DoubaoASRClient {
-    pub fn new(app_id: String, access_key: String) -> Self {
+    pub fn new(app_id: String, access_key: String, dictionary: Vec<String>) -> Self {
         Self {
             app_id,
             access_key,
             client: utils::create_http_client(),
+            dictionary,
         }
     }
 
     pub async fn transcribe_bytes(&self, audio_data: &[u8]) -> Result<String> {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("豆包 ASR: 音频数据大小 {} bytes", audio_data.len());
+
+        // 构建词库 hotwords JSON
+        let corpus = if !self.dictionary.is_empty() {
+            let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+                .map(|w| serde_json::json!({"word": w}))
+                .collect();
+            let context = serde_json::json!({"hotwords": hotwords}).to_string();
+            tracing::info!("豆包 HTTP ASR 词库: {} 个词, context={}", self.dictionary.len(), context);
+            Some(serde_json::json!({"context": context}))
+        } else {
+            tracing::info!("豆包 HTTP ASR 词库: 未配置");
+            None
+        };
+
+        let mut request_obj = serde_json::json!({"model_name": "bigmodel"});
+        if let Some(c) = corpus {
+            request_obj["corpus"] = c;
+        }
 
         let request_body = serde_json::json!({
             "user": {
@@ -32,9 +52,7 @@ impl DoubaoASRClient {
             "audio": {
                 "data": audio_base64
             },
-            "request": {
-                "model_name": "bigmodel"
-            }
+            "request": request_obj
         });
 
         let request_id = uuid::Uuid::new_v4().to_string();

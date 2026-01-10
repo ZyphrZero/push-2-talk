@@ -135,6 +135,7 @@ async fn save_config(
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
+    dictionary: Option<Vec<String>>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
     let has_fallback = !fallback_api_key.is_empty();
@@ -170,6 +171,7 @@ async fn save_config(
         dual_hotkey_config: dual_hotkey_config.unwrap_or_default(),
         transcription_mode: config::TranscriptionMode::default(),
         enable_mute_other_apps: enable_mute_other_apps.unwrap_or(false),
+        dictionary: dictionary.unwrap_or_default(),
     };
 
     config
@@ -199,6 +201,7 @@ async fn handle_recording_start(
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
+    dictionary: Vec<String>,
 ) {
     tracing::info!("检测到快捷键按下");
 
@@ -233,10 +236,10 @@ async fn handle_recording_start(
         let provider = realtime_provider.lock().unwrap().clone();
         match provider {
             Some(config::AsrProvider::Doubao) => {
-                handle_doubao_realtime_start(app, streaming_recorder, doubao_session, audio_sender_handle, doubao_app_id, doubao_access_token).await;
+                handle_doubao_realtime_start(app, streaming_recorder, doubao_session, audio_sender_handle, doubao_app_id, doubao_access_token, dictionary).await;
             }
             _ => {
-                handle_qwen_realtime_start(app, streaming_recorder, active_session, audio_sender_handle, api_key).await;
+                handle_qwen_realtime_start(app, streaming_recorder, active_session, audio_sender_handle, api_key, dictionary).await;
             }
         }
     } else {
@@ -264,6 +267,7 @@ async fn handle_doubao_realtime_start(
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
+    dictionary: Vec<String>,
 ) {
     tracing::info!("启动豆包实时流式转录...");
 
@@ -290,7 +294,7 @@ async fn handle_doubao_realtime_start(
 
     if let Some(chunk_rx) = chunk_rx {
         if let (Some(app_id), Some(access_token)) = (doubao_app_id.as_ref(), doubao_access_token.as_ref()) {
-            let realtime_client = DoubaoRealtimeClient::new(app_id.clone(), access_token.clone());
+            let realtime_client = DoubaoRealtimeClient::new(app_id.clone(), access_token.clone(), dictionary);
             // 清理旧的会话和任务（防止资源泄漏）
             {
                 let mut session_guard = doubao_session.lock().await;
@@ -355,6 +359,7 @@ async fn handle_qwen_realtime_start(
     active_session: Arc<tokio::sync::Mutex<Option<RealtimeSession>>>,
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     api_key: String,
+    dictionary: Vec<String>,
 ) {
     tracing::info!("启动千问实时流式转录...");
 
@@ -373,7 +378,7 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new(api_key);
+    let realtime_client = QwenRealtimeClient::new(api_key, dictionary);
     match realtime_client.start_session().await {
         Ok(session) => {
             tracing::info!("千问 WebSocket 连接已建立");
@@ -464,6 +469,7 @@ async fn start_app(
     dual_hotkey_config: Option<config::DualHotkeyConfig>,
     assistant_config: Option<config::AssistantConfig>,
     enable_mute_other_apps: Option<bool>,
+    dictionary: Option<Vec<String>>,
 ) -> Result<String, String> {
     tracing::info!("启动应用...");
 
@@ -502,6 +508,9 @@ async fn start_app(
     tracing::info!("ASR 模式: {}", if use_realtime_mode { "实时 WebSocket" } else { "HTTP" });
     tracing::info!("LLM 后处理: {}", if enable_post_process_mode { "启用" } else { "禁用" });
 
+    let dict = dictionary.unwrap_or_default();
+    tracing::info!("词库: {} 个词", dict.len());
+
     // 根据 asr_config 初始化对应的 ASR 客户端
     {
         *state.qwen_client.lock().unwrap() = None;
@@ -511,15 +520,15 @@ async fn start_app(
         if let Some(ref cfg) = asr_config {
             match cfg.primary.provider {
                 config::AsrProvider::Qwen => {
-                    *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(cfg.primary.api_key.clone()));
+                    *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(cfg.primary.api_key.clone(), dict.clone()));
                 }
                 config::AsrProvider::Doubao => {
                     if let (Some(app_id), Some(access_token)) = (&cfg.primary.app_id, &cfg.primary.access_token) {
-                        *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(app_id.clone(), access_token.clone()));
+                        *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(app_id.clone(), access_token.clone(), dict.clone()));
                     } else {
                         let parts: Vec<&str> = cfg.primary.api_key.split(':').collect();
                         if parts.len() == 2 {
-                            *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(parts[0].to_string(), parts[1].to_string()));
+                            *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(parts[0].to_string(), parts[1].to_string(), dict.clone()));
                         } else {
                             tracing::error!("豆包 API Key 格式错误，应为 app_id:access_key");
                         }
@@ -533,15 +542,15 @@ async fn start_app(
                 if let Some(ref fb) = cfg.fallback {
                     match fb.provider {
                         config::AsrProvider::Qwen if state.qwen_client.lock().unwrap().is_none() => {
-                            *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(fb.api_key.clone()));
+                            *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(fb.api_key.clone(), dict.clone()));
                         }
                         config::AsrProvider::Doubao if state.doubao_client.lock().unwrap().is_none() => {
                             if let (Some(app_id), Some(access_token)) = (&fb.app_id, &fb.access_token) {
-                                *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(app_id.clone(), access_token.clone()));
+                                *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(app_id.clone(), access_token.clone(), dict.clone()));
                             } else {
                                 let parts: Vec<&str> = fb.api_key.split(':').collect();
                                 if parts.len() == 2 {
-                                    *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(parts[0].to_string(), parts[1].to_string()));
+                                    *state.doubao_client.lock().unwrap() = Some(DoubaoASRClient::new(parts[0].to_string(), parts[1].to_string(), dict.clone()));
                                 }
                             }
                         }
@@ -554,7 +563,7 @@ async fn start_app(
             }
         } else {
             if !api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(api_key.clone()));
+                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(api_key.clone(), dict.clone()));
             }
             if !fallback_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() = Some(SenseVoiceClient::new(fallback_api_key.clone()));
@@ -670,6 +679,7 @@ async fn start_app(
     let audio_sender_handle_start = Arc::clone(&state.audio_sender_handle);
     let use_realtime_start = use_realtime_mode;
     let api_key_start = api_key.clone();
+    let dictionary_start = dict.clone();
     let is_running_start = Arc::clone(&state.is_running);
     // AI 助手模式专用
     let current_trigger_mode_start = Arc::clone(&state.current_trigger_mode);
@@ -757,6 +767,7 @@ async fn start_app(
         let doubao_access_token = doubao_access_token_start.clone();
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
+        let dictionary = dictionary_start.clone();
 
         tauri::async_runtime::spawn(async move {
             // 1. 先执行开始录音逻辑 (内部会发送 recording_started 事件)
@@ -773,6 +784,7 @@ async fn start_app(
                 doubao_app_id,
                 doubao_access_token,
                 audio_mute_manager,
+                dictionary,
             ).await;
 
             // 2. 录音初始化完成后，再发送锁定事件

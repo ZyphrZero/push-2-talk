@@ -72,6 +72,7 @@ impl RealtimeSession {
 pub struct ConnectionPool {
     api_key: String,
     connection: Arc<Mutex<Option<PooledConnection>>>,
+    dictionary: Vec<String>,
 }
 
 struct PooledConnection {
@@ -79,10 +80,11 @@ struct PooledConnection {
 }
 
 impl ConnectionPool {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
         Self {
             api_key,
             connection: Arc::new(Mutex::new(None)),
+            dictionary,
         }
     }
 
@@ -135,6 +137,19 @@ impl ConnectionPool {
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
 
         // 发送 session.update 配置会话
+        // 词库用顿号分隔
+        let corpus_text = self.dictionary.join("、");
+
+        let mut input_audio_transcription = serde_json::json!({
+            "language": "zh"
+        });
+        if !corpus_text.is_empty() {
+            tracing::info!("Qwen 流式 ASR 词库: {} 个词, corpus={}", self.dictionary.len(), corpus_text);
+            input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
+        } else {
+            tracing::info!("Qwen 流式 ASR 词库: 未配置");
+        }
+
         let session_update = serde_json::json!({
             "event_id": format!("event_{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -145,9 +160,7 @@ impl ConnectionPool {
                 "modalities": ["text"],
                 "input_audio_format": "pcm",
                 "sample_rate": 16000,
-                "input_audio_transcription": {
-                    "language": "zh"
-                },
+                "input_audio_transcription": input_audio_transcription,
                 "turn_detection": serde_json::Value::Null  // 禁用 VAD，使用手动 commit
             }
         });
@@ -318,9 +331,9 @@ pub struct QwenRealtimeClient {
 }
 
 impl QwenRealtimeClient {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
         Self {
-            pool: ConnectionPool::new(api_key),
+            pool: ConnectionPool::new(api_key, dictionary),
         }
     }
 
