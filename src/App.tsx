@@ -74,10 +74,10 @@ interface DualHotkeyConfig {
 
 // 按键显示名称映射
 const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
-  control_left: 'Ctrl', control_right: 'Ctrl(右)',
-  shift_left: 'Shift', shift_right: 'Shift(右)',
-  alt_left: 'Alt', alt_right: 'Alt(右)',
-  meta_left: 'Win', meta_right: 'Win(右)',
+  control_left: 'Ctrl(左)', control_right: 'Ctrl(右)',
+  shift_left: 'Shift(左)', shift_right: 'Shift(右)',
+  alt_left: 'Alt(左)', alt_right: 'Alt(右)',
+  meta_left: 'Win(左)', meta_right: 'Win(右)',
   space: 'Space', tab: 'Tab', caps_lock: 'CapsLock', escape: 'Esc',
   f1: 'F1', f2: 'F2', f3: 'F3', f4: 'F4', f5: 'F5', f6: 'F6',
   f7: 'F7', f8: 'F8', f9: 'F9', f10: 'F10', f11: 'F11', f12: 'F12',
