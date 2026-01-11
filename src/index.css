@@ -83,15 +83,16 @@ code {
   align-items: center;
   justify-content: center;
   gap: 3px;
-  height: 24px;
+  height: 32px;
 }
 
 .wave-bar {
   width: 3px;
-  min-height: 4px;
+  min-height: 3px;
   border-radius: 2px;
   background: white;
-  transition: height 50ms ease-out;
+  /* 关键：禁用 CSS transition，完全由 JS 控制动画 */
+  transition: none !important;
   will-change: height;
 }
 
@@ -155,9 +156,9 @@ code {
 
 /* ========== 松手模式样式 ========== */
 
-/* 锁定模式悬浮窗 - 宽度 140px + 蓝色渐变 */
+/* 锁定模式悬浮窗 - 宽度 160px + 蓝色渐变 */
 .overlay-pill-locked {
-  width: 140px;
+  width: 160px;
   padding: 4px 8px;
   background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(29, 78, 216, 0.95));
 }
@@ -224,10 +225,11 @@ code {
 
 .wave-bar-mini {
   width: 3px;
-  min-height: 4px;
-  max-height: 20px;
+  min-height: 3px;
+  max-height: 26px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.9);
-  transition: height 50ms ease-out;
+  /* 关键：禁用 CSS transition，完全由 JS 控制动画 */
+  transition: none !important;
   will-change: height;
 }

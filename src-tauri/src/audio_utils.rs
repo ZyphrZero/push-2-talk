@@ -10,6 +10,7 @@ pub struct AudioLevelPayload {
 }
 
 /// 计算音频样本的 RMS 音量级别（0.0 到 1.0）
+/// 优化：使用平方根压缩代替对数压缩，保留更大的动态范围
 pub fn calculate_audio_level(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -21,16 +22,13 @@ pub fn calculate_audio_level(samples: &[f32]) -> f32 {
         .sum();
     let rms = (sum / samples.len() as f64).sqrt() as f32;
 
-    // 将 RMS 值映射到 0.0-1.0 范围，并应用一些增益使其更敏感
-    // 语音通常在 0.01-0.3 RMS 范围内
-    let normalized = (rms * 5.0).min(1.0);
+    // 将 RMS 值映射到 0.0-1.0 范围
+    // 语音通常在 0.01-0.3 RMS 范围内，使用 8.0 增益使其更敏感
+    let normalized = (rms * 8.0).min(1.0);
 
-    // 应用简单的对数缩放使低音量更明显
-    if normalized > 0.0 {
-        (normalized.ln() + 4.0) / 4.0
-    } else {
-        0.0
-    }.max(0.0).min(1.0)
+    // 使用平方根压缩（比对数更温和，保留更大动态范围）
+    // 0.1 → 0.316, 0.5 → 0.707, 1.0 → 1.0
+    normalized.sqrt().max(0.0).min(1.0)
 }
 
 /// 发送音频级别事件到前端

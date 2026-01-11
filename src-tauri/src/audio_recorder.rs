@@ -111,14 +111,15 @@ impl AudioRecorder {
         let is_recording = Arc::clone(&self.is_recording);
         let err_fn = |err| tracing::error!("录音流错误: {}", err);
 
-        // 音频级别发送计数器
-        let level_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        // 基于时间的音频级别发送控制（目标 30-40Hz）
+        use std::time::Instant;
+        let last_emit_time: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
 
         // 根据采样格式创建不同的 stream
         let stream = match supported_config.sample_format() {
             cpal::SampleFormat::F32 => {
                 let app_handle_f32 = app_handle.clone();
-                let level_counter_f32 = Arc::clone(&level_counter);
+                let last_emit_time_f32 = Arc::clone(&last_emit_time);
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -126,16 +127,14 @@ impl AudioRecorder {
                             let mut buffer = audio_data.lock().unwrap();
                             buffer.extend_from_slice(data);
 
-                            // 计算并发送音频级别
+                            // 基于时间的音频级别发送（目标 ~30Hz，每 33ms 发送一次）
                             if let Some(ref app) = app_handle_f32 {
-                                let mut counter = level_counter_f32.lock().unwrap();
-                                *counter += 1;
-                                // 每次回调都发送（约 10-20ms 一次，提高流畅度）
-                                let level = calculate_audio_level(data);
-                                if *counter % 30 == 0 {
-                                    tracing::info!("[AudioLevel] 发送音频级别: {:.4}", level);
+                                let mut last_emit = last_emit_time_f32.lock().unwrap();
+                                if last_emit.elapsed().as_millis() >= 33 {
+                                    let level = calculate_audio_level(data);
+                                    emit_audio_level(app, level);
+                                    *last_emit = Instant::now();
                                 }
-                                emit_audio_level(app, level);
                             }
                         }
                     },
@@ -147,6 +146,7 @@ impl AudioRecorder {
                 let audio_data_i16 = Arc::clone(&audio_data);
                 let is_recording_i16 = Arc::clone(&is_recording);
                 let app_handle_i16 = app_handle.clone();
+                let last_emit_time_i16 = Arc::clone(&last_emit_time);
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -158,10 +158,14 @@ impl AudioRecorder {
                                 .collect();
                             buffer.extend(&f32_data);
 
-                            // 计算并发送音频级别
+                            // 基于时间的音频级别发送（目标 ~30Hz）
                             if let Some(ref app) = app_handle_i16 {
-                                let level = calculate_audio_level(&f32_data);
-                                emit_audio_level(app, level);
+                                let mut last_emit = last_emit_time_i16.lock().unwrap();
+                                if last_emit.elapsed().as_millis() >= 33 {
+                                    let level = calculate_audio_level(&f32_data);
+                                    emit_audio_level(app, level);
+                                    *last_emit = Instant::now();
+                                }
                             }
                         }
                     },
@@ -173,6 +177,7 @@ impl AudioRecorder {
                 let audio_data_u16 = Arc::clone(&audio_data);
                 let is_recording_u16 = Arc::clone(&is_recording);
                 let app_handle_u16 = app_handle;
+                let last_emit_time_u16 = Arc::clone(&last_emit_time);
                 device.build_input_stream(
                     &config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
@@ -184,10 +189,14 @@ impl AudioRecorder {
                                 .collect();
                             buffer.extend(&f32_data);
 
-                            // 计算并发送音频级别
+                            // 基于时间的音频级别发送（目标 ~30Hz）
                             if let Some(ref app) = app_handle_u16 {
-                                let level = calculate_audio_level(&f32_data);
-                                emit_audio_level(app, level);
+                                let mut last_emit = last_emit_time_u16.lock().unwrap();
+                                if last_emit.elapsed().as_millis() >= 33 {
+                                    let level = calculate_audio_level(&f32_data);
+                                    emit_audio_level(app, level);
+                                    *last_emit = Instant::now();
+                                }
                             }
                         }
                     },

@@ -133,9 +133,12 @@ impl StreamingRecorder {
         let pending_samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let pending_samples_clone = Arc::clone(&pending_samples);
 
-        // 音频级别发送计数器（用于控制发送频率）
-        let level_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
-        let level_counter_clone = Arc::clone(&level_counter);
+        // 基于时间的音频级别发送控制（目标 30-40Hz）
+        use std::time::Instant;
+        let last_emit_time: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
+        let last_emit_time_clone = Arc::clone(&last_emit_time);
+        let emit_counter: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let emit_counter_clone = Arc::clone(&emit_counter);
 
         // VAD 拖尾计数器：检测到静音后继续发送几个块，防止句尾吞字
         let vad_hangover: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -166,17 +169,20 @@ impl StreamingRecorder {
                     let mono = Self::to_mono(data, channels);
                     let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
 
-                    // 计算并发送音频级别（每2个chunk发送一次，约10Hz）
+                    // 基于时间的音频级别发送（目标 ~30Hz，每 33ms 发送一次）
                     if let Some(ref app) = app_handle_f32 {
-                        let mut counter = level_counter_clone.lock().unwrap();
-                        *counter += 1;
-                        if *counter % 2 == 0 {
+                        let mut last_emit = last_emit_time_clone.lock().unwrap();
+                        if last_emit.elapsed().as_millis() >= 33 {
                             let level = calculate_audio_level(&resampled);
-                            // 调试日志：每20次打印一次（约每2秒）
-                            if *counter % 40 == 0 {
-                                tracing::info!("[AudioLevel] 发送音频级别: {:.4}", level);
-                            }
                             emit_audio_level(app, level);
+                            *last_emit = Instant::now();
+
+                            // 调试日志：每30次打印一次（约每秒）
+                            let mut counter = emit_counter_clone.lock().unwrap();
+                            *counter += 1;
+                            if *counter % 30 == 0 {
+                                tracing::info!("[AudioLevel] 发送音频级别: {:.4} (30Hz)", level);
+                            }
                         }
                     }
 
@@ -226,7 +232,7 @@ impl StreamingRecorder {
                 let full_audio_data_i16 = Arc::clone(&full_audio_data);
                 let pending_samples_i16 = Arc::clone(&pending_samples);
                 let chunk_tx_i16 = chunk_tx.clone();
-                let level_counter_i16 = Arc::clone(&level_counter);
+                let last_emit_time_i16 = Arc::clone(&last_emit_time);
                 let app_handle_i16 = app_handle.clone();
                 let vad_hangover_i16 = Arc::clone(&vad_hangover);
                 let agc_gain_i16 = Arc::clone(&agc_gain);
@@ -250,13 +256,13 @@ impl StreamingRecorder {
                         let mono = Self::to_mono(&f32_data, channels);
                         let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
 
-                        // 计算并发送音频级别
+                        // 基于时间的音频级别发送（目标 ~30Hz）
                         if let Some(ref app) = app_handle_i16 {
-                            let mut counter = level_counter_i16.lock().unwrap();
-                            *counter += 1;
-                            if *counter % 2 == 0 {
+                            let mut last_emit = last_emit_time_i16.lock().unwrap();
+                            if last_emit.elapsed().as_millis() >= 33 {
                                 let level = calculate_audio_level(&resampled);
                                 emit_audio_level(app, level);
+                                *last_emit = Instant::now();
                             }
                         }
 
@@ -306,7 +312,7 @@ impl StreamingRecorder {
                 let full_audio_data_u16 = Arc::clone(&full_audio_data);
                 let pending_samples_u16 = Arc::clone(&pending_samples);
                 let chunk_tx_u16 = chunk_tx.clone();
-                let level_counter_u16 = Arc::clone(&level_counter);
+                let last_emit_time_u16 = Arc::clone(&last_emit_time);
                 let app_handle_u16 = app_handle;
                 let vad_hangover_u16 = Arc::clone(&vad_hangover);
                 let agc_gain_u16 = Arc::clone(&agc_gain);
@@ -330,13 +336,13 @@ impl StreamingRecorder {
                         let mono = Self::to_mono(&f32_data, channels);
                         let resampled = Self::resample(&mono, device_sample_rate, TARGET_SAMPLE_RATE);
 
-                        // 计算并发送音频级别
+                        // 基于时间的音频级别发送（目标 ~30Hz）
                         if let Some(ref app) = app_handle_u16 {
-                            let mut counter = level_counter_u16.lock().unwrap();
-                            *counter += 1;
-                            if *counter % 2 == 0 {
+                            let mut last_emit = last_emit_time_u16.lock().unwrap();
+                            if last_emit.elapsed().as_millis() >= 33 {
                                 let level = calculate_audio_level(&resampled);
                                 emit_audio_level(app, level);
+                                *last_emit = Instant::now();
                             }
                         }
 
