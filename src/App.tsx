@@ -1,5 +1,4 @@
 // src/App.tsx
-
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -42,9 +41,7 @@ import {
   BookText
 } from "lucide-react";
 import { nanoid } from 'nanoid';
-
 // --- 新的接口定义 ---
-
 // 热键类型定义
 type HotkeyKey =
   | 'control_left' | 'control_right'
@@ -59,19 +56,16 @@ type HotkeyKey =
   | 'num_0' | 'num_1' | 'num_2' | 'num_3' | 'num_4' | 'num_5' | 'num_6' | 'num_7' | 'num_8' | 'num_9'
   | 'up' | 'down' | 'left' | 'right'
   | 'return' | 'backspace' | 'delete' | 'insert' | 'home' | 'end' | 'page_up' | 'page_down';
-
 interface HotkeyConfig {
   keys: HotkeyKey[];
   enable_release_lock?: boolean;  // 已弃用，保留用于向后兼容
   release_mode_keys?: HotkeyKey[];  // 松手模式独立快捷键
 }
-
 // 双热键配置（听写模式 + AI助手模式）
 interface DualHotkeyConfig {
   dictation: HotkeyConfig;  // 听写模式（默认 Ctrl+Win）
   assistant: HotkeyConfig;  // AI助手模式（默认 Alt+Space）
 }
-
 // 按键显示名称映射
 const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
   control_left: 'Ctrl(左)', control_right: 'Ctrl(右)',
@@ -92,28 +86,23 @@ const KEY_DISPLAY_NAMES: Record<HotkeyKey, string> = {
   return: 'Enter', backspace: 'Backspace', delete: 'Delete', insert: 'Insert',
   home: 'Home', end: 'End', page_up: 'PageUp', page_down: 'PageDown',
 };
-
 type AsrProvider = 'qwen' | 'doubao' | 'siliconflow';
-
 interface AsrProviderConfig {
   provider: AsrProvider;
   api_key: string;
   app_id?: string;
   access_token?: string;
 }
-
 interface AsrConfig {
   primary: AsrProviderConfig;
   fallback: AsrProviderConfig | null;
   enable_fallback: boolean;
 }
-
 interface LlmPreset {
   id: string;
   name: string;
   system_prompt: string;
 }
-
 interface LlmConfig {
   endpoint: string;
   model: string;
@@ -121,7 +110,6 @@ interface LlmConfig {
   presets: LlmPreset[];
   active_preset_id: string;
 }
-
 // Smart Command 配置（保留用于向后兼容，但不再使用）
 interface SmartCommandConfig {
   enabled: boolean;
@@ -130,7 +118,6 @@ interface SmartCommandConfig {
   api_key: string;
   system_prompt: string;
 }
-
 // AI 助手配置（双系统提示词）
 interface AssistantConfig {
   enabled: boolean;
@@ -140,7 +127,6 @@ interface AssistantConfig {
   qa_system_prompt: string;               // 问答模式提示词（无选中文本时）
   text_processing_system_prompt: string;  // 文本处理提示词（有选中文本时）
 }
-
 interface AppConfig {
   dashscope_api_key: string;
   siliconflow_api_key: string;
@@ -156,7 +142,6 @@ interface AppConfig {
   enable_mute_other_apps: boolean;        // 录音时静音其他应用
   dictionary: string[];                   // 个人词典（热词列表）
 }
-
 interface TranscriptionResult {
   text: string;
   original_text: string | null;
@@ -166,7 +151,6 @@ interface TranscriptionResult {
   mode?: string; // "normal" | "smartcommand"
   inserted?: boolean;
 }
-
 // --- 历史记录 ---
 interface HistoryRecord {
   id: string;
@@ -180,26 +164,21 @@ interface HistoryRecord {
   success: boolean;
   errorMessage: string | null;
 }
-
 const HISTORY_KEY = 'pushtotalk_history';
 const MAX_HISTORY = 50;
-
 const loadHistory = (): HistoryRecord[] => {
   try {
     const data = localStorage.getItem(HISTORY_KEY);
     return data ? JSON.parse(data) : [];
   } catch { return []; }
 };
-
 const saveHistory = (records: HistoryRecord[]) => {
   localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, MAX_HISTORY)));
 };
-
 const formatTimestamp = (ts: number): string => {
   const d = new Date(ts);
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
 };
-
 // 默认配置
 const DEFAULT_PRESETS: LlmPreset[] = [
   {
@@ -218,7 +197,6 @@ const DEFAULT_PRESETS: LlmPreset[] = [
     system_prompt: "你是一个专业的翻译助手。请将用户的中文语音转写内容翻译成地道、流畅的英文。不要输出任何解释性文字，只输出翻译结果。"
   }
 ];
-
 const DEFAULT_LLM_CONFIG: LlmConfig = {
   endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
   model: "glm-4-flash-250414",
@@ -226,7 +204,6 @@ const DEFAULT_LLM_CONFIG: LlmConfig = {
   presets: DEFAULT_PRESETS,
   active_preset_id: "polishing"
 };
-
 // Smart Command 默认配置
 const DEFAULT_SMART_COMMAND_CONFIG: SmartCommandConfig = {
   enabled: false,
@@ -237,13 +214,11 @@ const DEFAULT_SMART_COMMAND_CONFIG: SmartCommandConfig = {
 1. 理解用户的问题
 2. 给出简洁、准确、有用的回答
 3. 如果问题不够明确，给出最可能的解答
-
 注意：
 - 回答要简洁明了，适合直接粘贴使用
 - 避免过多的解释和废话
 - 如果是代码相关问题，直接给出代码`
 };
-
 // AI 助手默认配置
 const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
   enabled: false,
@@ -254,24 +229,20 @@ const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
 1. 理解用户的问题
 2. 给出简洁、准确、有用的回答
 3. 如果问题不够明确，给出最可能的解答
-
 注意：
 - 回答要简洁明了，适合直接粘贴使用
 - 避免过多的解释和废话
 - 如果是代码相关问题，直接给出代码`,
   text_processing_system_prompt: `你是一个文本处理助手。用户会选中一段文本，然后通过语音告诉你要如何处理这段文本。
-
 你的任务：
 1. 理解用户的语音指令
 2. 对选中的文本执行相应操作（润色、翻译、总结、改写等）
 3. 直接输出处理后的文本
-
 注意：
 - 只输出处理后的结果，不要输出任何解释
 - 保持原文的格式和结构（除非用户要求改变）
 - 如果指令不明确，按最合理的方式处理`
 };
-
 // ASR 服务商元数据
 const ASR_PROVIDERS: Record<AsrProvider, { name: string; model: string; docsUrl: string }> = {
   qwen: {
@@ -290,14 +261,12 @@ const ASR_PROVIDERS: Record<AsrProvider, { name: string; model: string; docsUrl:
     docsUrl: 'https://cloud.siliconflow.cn/',
   },
 };
-
 function App() {
   const [currentVersion, setCurrentVersion] = useState(() =>
     localStorage.getItem('app_version') || ''
   );
   const [apiKey, setApiKey] = useState("");
   const [fallbackApiKey, setFallbackApiKey] = useState("");
-
   // Cache for different ASR providers to prevent data loss when switching
   const CACHE_STORAGE_KEY = 'pushtotalk_asr_cache';
   const [asrCache, setAsrCache] = useState<{
@@ -326,7 +295,6 @@ function App() {
       siliconflow: { api_key: '' }
     };
   });
-
   const [asrConfig, setAsrConfig] = useState<AsrConfig>(() => {
     const provider = asrCache.active_provider;
     return {
@@ -385,24 +353,19 @@ function App() {
   const [recordingKeys, setRecordingKeys] = useState<HotkeyKey[]>([]); // 录制时实时显示的按键
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<string | null>(null); // 当前转录模式: "normal" | "smartcommand"
-
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
-
   // 获取当前选中的预设对象
   const activePreset = llmConfig.presets.find(p => p.id === llmConfig.active_preset_id) || llmConfig.presets[0];
-
   // Auto-save asrCache to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(asrCache));
   }, [asrCache]);
-
   useEffect(() => {
     if (transcriptEndRef.current) {
       transcriptEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [transcript]);
-
   useEffect(() => {
     const init = async () => {
       try {
@@ -410,7 +373,6 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 100));
         await setupEventListeners();
         await loadConfig();
-
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
@@ -436,14 +398,12 @@ function App() {
     };
     init();
   }, []);
-
   useEffect(() => {
     getVersion().then(v => {
       setCurrentVersion(v);
       localStorage.setItem('app_version', v);
     }).catch(() => {});
   }, []);
-
   useEffect(() => {
     let interval: number;
     if (status === "recording") {
@@ -456,18 +416,15 @@ function App() {
       if (interval) clearInterval(interval);
     };
   }, [status]);
-
   // 热键录制监听
   useEffect(() => {
     if (!isRecordingHotkey) {
       setRecordingKeys([]); // 清空录制状态
       return;
     }
-
     console.log("开始热键录制监听");
     const pressedKeysSet = new Set<HotkeyKey>();
     let hasRecordedKeys = false; // 标记是否已经录制到按键
-
     const handleKeyDown = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -482,22 +439,18 @@ function App() {
         console.log("当前按下的键:", Array.from(pressedKeysSet));
       }
     };
-
     const handleKeyUp = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
       console.log("KeyUp:", e.key, e.code, "hasRecordedKeys:", hasRecordedKeys, "size:", pressedKeysSet.size);
-
       // 只有录制到按键后，松开任意键才结束录制
       if (hasRecordedKeys && pressedKeysSet.size > 0) {
         const keysArray = Array.from(pressedKeysSet);
         console.log("准备保存的按键:", keysArray);
-
         // 验证：必须有修饰键或功能键
         const hasModifier = keysArray.some(k => isModifierKey(k));
         const isFunctionKey = keysArray.every(k => /^f([1-9]|1[0-2])$/.test(k));
         console.log("是否包含修饰键:", hasModifier, "是否为功能键:", isFunctionKey);
-
         if (hasModifier || isFunctionKey) {
           // 根据录制模式更新对应的热键配置
           const newDualHotkeyConfig = { ...dualHotkeyConfig };
@@ -519,7 +472,6 @@ function App() {
           }
           setDualHotkeyConfig(newDualHotkeyConfig);
           setHotkeyError(null);
-
           // 保存配置
           invoke<string>("save_config", {
             apiKey,
@@ -542,33 +494,27 @@ function App() {
           setHotkeyError("必须包含修饰键(Ctrl/Alt/Shift/Win) 或 功能键(F1-F12)");
           setTimeout(() => setHotkeyError(null), 3000);
         }
-
         setIsRecordingHotkey(false);
         setRecordingKeys([]);
       }
     };
-
     // 使用 capture 阶段捕获事件
     window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp, true);
-
     return () => {
       console.log("停止热键录制监听");
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
   }, [isRecordingHotkey, apiKey, fallbackApiKey, useRealtime, enablePostProcess, llmConfig, asrConfig]);
-
   const loadConfig = async () => {
     try {
       const config = await invoke<AppConfig>("load_config");
       setApiKey(config.dashscope_api_key);
       setFallbackApiKey(config.siliconflow_api_key || "");
-
       // 智能填充缓存：更新后端读到的 Key 到对应的缓存槽位
       if (config.asr_config) {
         const backendPrimary = config.asr_config.primary;
-
         setAsrCache(prev => {
           const newCache = { ...prev };
           // 更新千问缓存
@@ -590,10 +536,8 @@ function App() {
           }
           return newCache;
         });
-
         // 使用缓存中的 active_provider，而不是后端返回的
         const preferredProvider = asrCache.active_provider;
-
         setAsrConfig({
           ...config.asr_config,
           primary: {
@@ -604,30 +548,23 @@ function App() {
           }
         });
       }
-
       setUseRealtime(config.use_realtime_asr ?? true);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
-
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
-
       if (loadedLlmConfig.presets && loadedLlmConfig.presets.length > 0) {
           const activeExists = loadedLlmConfig.presets.find(p => p.id === loadedLlmConfig.active_preset_id);
           if (!activeExists) {
               loadedLlmConfig.active_preset_id = loadedLlmConfig.presets[0].id;
           }
       }
-
       setLlmConfig(loadedLlmConfig);
-
       // Smart Command 配置已移除，不再使用
-
       // 加载 AI 助手配置
       if (config.assistant_config) {
         setAssistantConfig(config.assistant_config);
       } else {
         setAssistantConfig(DEFAULT_ASSISTANT_CONFIG);
       }
-
       // 加载双热键配置（优先使用 dual_hotkey_config，向后兼容 hotkey_config）
       if (config.dual_hotkey_config) {
         setDualHotkeyConfig(config.dual_hotkey_config);
@@ -638,12 +575,11 @@ function App() {
           assistant: { keys: ['alt_left', 'space'] }
         });
       }
-
       // 加载关闭行为配置
       if (config.close_action) {
         setCloseAction(config.close_action);
       }
-
+      // 加载托盘图标显示配置（默认显示）
       // 加载开机自启动状态
       try {
         const autostart = await invoke<boolean>("get_autostart");
@@ -651,14 +587,11 @@ function App() {
       } catch (err) {
         console.error("获取开机自启状态失败:", err);
       }
-
       // 加载录音时静音其他应用的配置
       setEnableMuteOtherApps(config.enable_mute_other_apps ?? false);
-
       // 加载个人词典
       const loadedDictionary = (config.dictionary && Array.isArray(config.dictionary)) ? config.dictionary : [];
       setDictionary(loadedDictionary);
-
       // 自动启动时也需要传递 asrConfig、dualHotkeyConfig 和 assistantConfig
       const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
@@ -667,7 +600,6 @@ function App() {
       };
       const loadedSmartCommandConfig = config.smart_command_config || DEFAULT_SMART_COMMAND_CONFIG;
       const loadedAssistantConfig = config.assistant_config || DEFAULT_ASSISTANT_CONFIG;
-
       if (loadedAsrConfig && isAsrConfigValid(loadedAsrConfig.primary)) {
         autoStartApp(
           config.dashscope_api_key,
@@ -687,7 +619,6 @@ function App() {
       console.error("加载配置失败:", err);
     }
   };
-
   const autoStartApp = async (
     apiKey: string,
     fallbackApiKey: string,
@@ -722,7 +653,6 @@ function App() {
       setStatus("idle");
     }
   };
-
   const setupEventListeners = async () => {
     try {
       await listen("recording_started", () => {
@@ -816,13 +746,11 @@ function App() {
       throw err;
     }
   };
-
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
-
   // 词典操作函数
   const handleAddWord = () => {
     const word = newWord.trim();
@@ -835,7 +763,6 @@ function App() {
     setDictionary(prev => [...prev, word]);
     setNewWord('');
   };
-
   const handleDeleteWord = (index: number) => {
     setDictionary(prev => prev.filter((_, i) => i !== index));
     if (editingIndex === index) {
@@ -847,12 +774,10 @@ function App() {
       setEditingIndex(editingIndex - 1);
     }
   };
-
   const handleStartEdit = (index: number) => {
     setEditingIndex(index);
     setEditingValue(dictionary[index]);
   };
-
   const handleSaveEdit = () => {
     if (editingIndex !== null) {
       const word = editingValue.trim();
@@ -870,12 +795,10 @@ function App() {
       setEditingValue('');
     }
   };
-
   const handleCancelEdit = () => {
     setEditingIndex(null);
     setEditingValue('');
   };
-
   const handleSaveConfig = async () => {
     try {
       // 过滤空词条
@@ -895,7 +818,6 @@ function App() {
       });
       // 更新本地状态（移除空词条）
       setDictionary(validDictionary);
-
       // 如果服务正在运行，重启以应用新词库
       if (status === "running") {
         await invoke<string>("stop_app");
@@ -913,7 +835,6 @@ function App() {
           dictionary: validDictionary
         });
       }
-
       setError(null);
       setShowSuccessToast(true);
       setTimeout(() => setShowSuccessToast(false), 3000);
@@ -921,7 +842,6 @@ function App() {
       setError(String(err));
     }
   };
-
   const handleAutostartToggle = async () => {
     try {
       const newValue = !enableAutostart;
@@ -933,12 +853,10 @@ function App() {
       setError(String(err));
     }
   };
-
   const handleCheckUpdate = async () => {
     try {
       setUpdateStatus("checking");
       const update = await check();
-
       if (update) {
         setUpdateInfo({
           version: update.version,
@@ -955,11 +873,9 @@ function App() {
     } catch (err) {
       console.error("检查更新失败:", err);
       setUpdateStatus("idle");
-
       // 将技术错误转换为用户友好的中文提示
       const errorStr = String(err).toLowerCase();
       let errorMsg = "检查更新失败，请稍后重试";
-
       if (errorStr.includes("timeout") || errorStr.includes("timed out")) {
         errorMsg = "检查更新超时，请检查网络连接";
       } else if (errorStr.includes("network") || errorStr.includes("fetch") || errorStr.includes("connect")) {
@@ -971,20 +887,16 @@ function App() {
       } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
         errorMsg = "更新签名验证失败，请从官方渠道下载";
       }
-
       setError(errorMsg);
     }
   };
-
   const handleDownloadAndInstall = async () => {
     try {
       setUpdateStatus("downloading");
       const update = await check();
-
       if (update) {
         let downloaded = 0;
         let contentLength = 0;
-
         await update.downloadAndInstall((event) => {
           switch (event.event) {
             case 'Started':
@@ -1001,7 +913,6 @@ function App() {
               break;
           }
         });
-
         setUpdateStatus("ready");
         // 自动重启应用
         await relaunch();
@@ -1009,11 +920,9 @@ function App() {
     } catch (err) {
       console.error("下载更新失败:", err);
       setUpdateStatus("available");
-
       // 将技术错误转换为用户友好的中文提示
       const errorStr = String(err).toLowerCase();
       let errorMsg = "下载更新失败，请稍后重试";
-
       if (errorStr.includes("timeout") || errorStr.includes("timed out")) {
         errorMsg = "下载超时，请检查网络连接后重试";
       } else if (errorStr.includes("network") || errorStr.includes("fetch") || errorStr.includes("connect")) {
@@ -1025,11 +934,9 @@ function App() {
       } else if (errorStr.includes("signature") || errorStr.includes("verify")) {
         errorMsg = "安装包签名验证失败，请从官方渠道下载";
       }
-
       setError(errorMsg);
     }
   };
-
   const isAsrConfigValid = (config: AsrProviderConfig): boolean => {
     if (config.provider === 'qwen' || config.provider === 'siliconflow') {
       return config.api_key.trim() !== '';
@@ -1038,7 +945,6 @@ function App() {
     }
     return false;
   };
-
   const handleStartStop = async () => {
     try {
       if (status === "idle") {
@@ -1083,7 +989,6 @@ function App() {
       setError(String(err));
     }
   };
-
   const handleCancelTranscription = async () => {
     try {
       await invoke<string>("cancel_transcription");
@@ -1091,7 +996,6 @@ function App() {
       setError(String(err));
     }
   };
-
   const handleCloseAction = async (action: "close" | "minimize") => {
     if (rememberChoice) {
       setCloseAction(action);
@@ -1120,49 +1024,40 @@ function App() {
       await invoke("hide_to_tray");
     }
   };
-
   // 热键相关辅助函数
   const mapDomKeyToHotkeyKey = (e: KeyboardEvent): HotkeyKey | null => {
     const { key, code, location } = e;
-
     // 修饰键（带位置）
     if (key === 'Control') return location === 1 ? 'control_left' : 'control_right';
     if (key === 'Shift') return location === 1 ? 'shift_left' : 'shift_right';
     if (key === 'Alt') return location === 1 ? 'alt_left' : 'alt_right';
     if (key === 'Meta') return location === 1 ? 'meta_left' : 'meta_right';
-
     // 特殊键
     if (key === ' ') return 'space';
     if (key === 'Tab') return 'tab';
     if (key === 'Escape') return 'escape';
     if (key === 'CapsLock') return 'caps_lock';
-
     // 功能键
     if (/^F([1-9]|1[0-2])$/.test(key)) {
       return `f${key.slice(1).toLowerCase()}` as HotkeyKey;
     }
-
     // 字母键
     if (/^Key[A-Z]$/.test(code)) {
       return `key_${code.slice(3).toLowerCase()}` as HotkeyKey;
     }
-
     // 数字键 (Top Row)
     if (/^Digit[0-9]$/.test(code)) {
       return `num_${code.slice(5)}` as HotkeyKey;
     }
-
     // 小键盘数字键 (Numpad)
     if (/^Numpad[0-9]$/.test(code)) {
       return `num_${code.slice(6)}` as HotkeyKey;
     }
-
     // 方向键
     if (key === 'ArrowUp') return 'up';
     if (key === 'ArrowDown') return 'down';
     if (key === 'ArrowLeft') return 'left';
     if (key === 'ArrowRight') return 'right';
-
     // 编辑键
     if (key === 'Enter') return 'return';
     if (key === 'Backspace') return 'backspace';
@@ -1172,23 +1067,18 @@ function App() {
     if (key === 'End') return 'end';
     if (key === 'PageUp') return 'page_up';
     if (key === 'PageDown') return 'page_down';
-
     return null;
   };
-
   const isModifierKey = (key: HotkeyKey): boolean => {
     return ['control_left', 'control_right', 'shift_left', 'shift_right', 'alt_left', 'alt_right', 'meta_left', 'meta_right'].includes(key);
   };
-
   const formatHotkeyDisplay = (config: HotkeyConfig): string => {
     return config.keys.map(k => KEY_DISPLAY_NAMES[k] || k).join(' + ');
   };
-
   const resetHotkeyToDefault = (mode: 'dictation' | 'assistant') => {
     const defaultKeys = mode === 'dictation'
       ? { keys: ['control_left', 'meta_left'] as HotkeyKey[] }
       : { keys: ['alt_left', 'space'] as HotkeyKey[] };
-
     const newDualConfig = { ...dualHotkeyConfig };
     if (mode === 'dictation') {
       newDualConfig.dictation = defaultKeys;
@@ -1198,9 +1088,7 @@ function App() {
     setDualHotkeyConfig(newDualConfig);
     handleSaveConfig();
   };
-
   // --- 预设管理函数 ---
-
   const handleAddPreset = () => {
     const newPreset: LlmPreset = {
       id: nanoid(8),
@@ -1213,7 +1101,6 @@ function App() {
       active_preset_id: newPreset.id
     }));
   };
-
   const handleDeletePreset = (id: string) => {
     if (llmConfig.presets.length <= 1) return; // 至少保留一个
     
@@ -1228,7 +1115,6 @@ function App() {
       };
     });
   };
-
   const handleUpdateActivePreset = (key: keyof LlmPreset, value: string) => {
     setLlmConfig(prev => ({
       ...prev,
@@ -1237,7 +1123,6 @@ function App() {
       )
     }));
   };
-
   // --- 历史记录操作 ---
   const handleCopyText = (text: string, e?: React.MouseEvent) => {
     if (e) {
@@ -1247,16 +1132,13 @@ function App() {
     setCopyToast('已复制到剪贴板');
     setTimeout(() => setCopyToast(null), 2000);
   };
-
   const handleClearHistory = () => {
     setHistory([]);
     saveHistory([]);
   };
-
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
   const isRunning = status !== "idle";
-
   return (
     <div className="min-h-screen w-full bg-[#f5f5f7] text-slate-800 font-sans selection:bg-blue-500/20 selection:text-blue-700 flex items-center justify-center p-6">
       
@@ -1273,7 +1155,6 @@ function App() {
               <p className="text-xs text-slate-500 font-medium">AI 语音转写助手</p>
             </div>
           </div>
-
           <div className="flex items-center gap-2">
             {/* 词典按钮 */}
             <button
@@ -1341,7 +1222,6 @@ function App() {
             )}
           </div>
         </div>
-
         <div className={`absolute top-24 left-0 right-0 flex justify-center pointer-events-none transition-all duration-500 z-10 ${
             showSuccessToast ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'
           }`}>
@@ -1350,7 +1230,6 @@ function App() {
              <span>配置已保存成功</span>
           </div>
         </div>
-
         <div className="p-6 space-y-5">
           {error && (
             <div className="flex items-center gap-3 p-4 bg-red-50/80 border border-red-100 rounded-2xl text-red-600 text-sm animate-in slide-in-from-top-2 fade-in duration-300">
@@ -1358,7 +1237,6 @@ function App() {
               <span>{error}</span>
             </div>
           )}
-
           {/* Transcript Display Area */}
           <div className="relative group">
             <div className="absolute -inset-0.5 bg-gradient-to-r from-blue-300 to-indigo-300 rounded-2xl blur opacity-20 group-hover:opacity-40 transition duration-500"></div>
@@ -1405,7 +1283,6 @@ function App() {
                     </div>
                 )}
               </div>
-
               {originalTranscript ? (
                 <div className="flex-1 grid grid-cols-2 gap-4 min-h-0">
                   <div className="flex flex-col min-h-0 border-r border-slate-200 pr-4">
@@ -1463,14 +1340,12 @@ function App() {
               )}
             </div>
           </div>
-
           {/* Settings Area */}
           <div className="space-y-5">
             <div className="flex items-center gap-2 text-slate-900 font-semibold">
               <Settings size={18} />
               <h2>配置</h2>
             </div>
-
             {/* ASR 配置摘要卡片 */}
             <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
               <div className="flex items-center gap-3 flex-1">
@@ -1498,14 +1373,12 @@ function App() {
                 <Settings size={16} />
               </button>
             </div>
-
             {!isAsrConfigValid(asrConfig.primary) && (
               <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-100 rounded-xl text-amber-600 text-xs animate-in slide-in-from-top-2 fade-in duration-300">
                 <AlertCircle size={14} />
                 <span>请点击设置按钮配置 ASR API Key</span>
               </div>
             )}
-
             {/* Mode Switches */}
             <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
               <div className="flex items-center gap-3">
@@ -1535,7 +1408,6 @@ function App() {
                 }`} />
               </button>
             </div>
-
             <div className="flex items-center justify-between p-4 bg-slate-50/80 rounded-xl border border-slate-100">
               <div className="flex items-center gap-3">
                 <div className={`p-2 rounded-lg transition-colors ${enablePostProcess ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-400'}`}>
@@ -1584,14 +1456,12 @@ function App() {
                 </button>
               </div>
             </div>
-
             {enablePostProcess && !llmConfig.api_key && (
               <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-100 rounded-xl text-amber-600 text-xs animate-in slide-in-from-top-2 fade-in duration-300">
                 <AlertCircle size={14} />
                 <span>请点击设置按钮配置 LLM API Key</span>
               </div>
             )}
-
             <div className="flex justify-end gap-4 text-xs text-slate-400">
                <button
                  onClick={() => openUrl("https://ncn18msloi7t.feishu.cn/wiki/NFM3wAcWNi0IGTkUqkVckxWWntb")}
@@ -1624,7 +1494,6 @@ function App() {
             </div>
           </div>
         </div>
-
         {/* Bottom Actions */}
         <div className="px-6 py-4 bg-slate-50/80 backdrop-blur border-t border-slate-100 flex items-center gap-4">
           <button
@@ -1635,7 +1504,6 @@ function App() {
             <CheckCircle2 size={18} className="group-hover:text-green-600 transition-colors"/>
             保存配置
           </button>
-
           <button
             onClick={handleStartStop}
             disabled={isRecording || isTranscribing}
@@ -1657,12 +1525,10 @@ function App() {
           </button>
         </div>
       </div>
-
       {/* 统一服务配置弹窗（三个 Tab：ASR、LLM 润色、AI 助手） */}
       {showServiceModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-
             {/* Modal Header with Tabs */}
             <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-gray-50">
               <div className="flex items-center justify-between mb-4">
@@ -1679,7 +1545,6 @@ function App() {
                   <X size={20} />
                 </button>
               </div>
-
               {/* Tab Bar */}
               <div className="flex gap-1 p-1 bg-slate-100 rounded-xl">
                 <button
@@ -1728,10 +1593,8 @@ function App() {
                 </button>
               </div>
             </div>
-
             {/* Tab Content */}
             <div className="flex-1 overflow-hidden">
-
               {/* ASR Tab */}
               {serviceModalTab === 'asr' && (
                 <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -1739,7 +1602,6 @@ function App() {
                     <AlertCircle size={14} className="flex-shrink-0" />
                     <span>ASR 用于语音转文字，支持阿里千问和豆包两种主模型，以及硅基移动作为备用模型</span>
                   </div>
-
                   {/* 主模型配置 */}
                   <div className="space-y-4">
                     <h4 className="text-sm font-bold text-slate-700">主模型</h4>
@@ -1764,7 +1626,6 @@ function App() {
                           <option value="doubao">{ASR_PROVIDERS.doubao.name}</option>
                         </select>
                       </div>
-
                       {asrConfig.primary.provider === 'qwen' ? (
                         <div className="space-y-2">
                           <label className="text-xs font-medium text-slate-600">API Key</label>
@@ -1825,7 +1686,6 @@ function App() {
                       <div className="text-xs text-slate-500">模型：{ASR_PROVIDERS[asrConfig.primary.provider].model}</div>
                     </div>
                   </div>
-
                   {/* 备用模型配置 */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -1846,7 +1706,6 @@ function App() {
                         <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-all duration-300 ${asrConfig.enable_fallback ? 'left-5' : 'left-0.5'}`} />
                       </button>
                     </div>
-
                     {asrConfig.enable_fallback && (
                       <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200 animate-in slide-in-from-top-2 fade-in duration-300">
                         <div className="space-y-2">
@@ -1888,7 +1747,6 @@ function App() {
                   </div>
                 </div>
               )}
-
               {/* LLM Tab */}
               {serviceModalTab === 'llm' && (
                 <div className="h-full flex overflow-hidden">
@@ -1938,7 +1796,6 @@ function App() {
                       ))}
                     </div>
                   </div>
-
                   {/* Right Content: Preset Details & Global Config */}
                   <div className="flex-1 flex flex-col bg-white overflow-hidden">
                     <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -2017,7 +1874,6 @@ function App() {
                   </div>
                 </div>
               )}
-
               {/* AI Assistant Tab */}
               {serviceModalTab === 'assistant' && (
                 <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -2025,7 +1881,6 @@ function App() {
                     <AlertCircle size={14} className="flex-shrink-0" />
                     <span>AI 助手 ({formatHotkeyDisplay(dualHotkeyConfig.assistant)}) 可智能处理选中文本或回答问题，无需开关，配置 API 即可使用</span>
                   </div>
-
                   {/* 模型配置 */}
                   <div className="space-y-4">
                     <h4 className="text-sm font-bold text-slate-700">模型配置</h4>
@@ -2069,7 +1924,6 @@ function App() {
                       </div>
                     </div>
                   </div>
-
                   {/* 问答模式提示词 */}
                   <div className="space-y-4">
                     <h4 className="text-sm font-bold text-slate-700">问答模式提示词</h4>
@@ -2081,7 +1935,6 @@ function App() {
                       placeholder="定义 AI 助手如何回答问题..."
                     />
                   </div>
-
                   {/* 文本处理提示词 */}
                   <div className="space-y-4">
                     <h4 className="text-sm font-bold text-slate-700">文本处理提示词</h4>
@@ -2095,7 +1948,6 @@ function App() {
                   </div>
                 </div>
               )}
-
               {/* Dictionary Tab */}
               {serviceModalTab === 'dictionary' && (
                 <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -2104,7 +1956,6 @@ function App() {
                     <AlertCircle size={14} className="flex-shrink-0" />
                     <span>添加常用词汇（专业术语、人名、产品名等），提升语音识别准确率</span>
                   </div>
-
                   {/* 添加词条 */}
                   <div className="space-y-2">
                     <div className="flex gap-2">
@@ -2133,7 +1984,6 @@ function App() {
                       <p className="text-xs text-red-500 pl-1">该词汇已存在</p>
                     )}
                   </div>
-
                   {/* 词条列表 - 气囊/标签云布局 */}
                   {dictionary.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-slate-300 space-y-3">
@@ -2199,7 +2049,6 @@ function App() {
                 </div>
               )}
             </div>
-
             {/* Modal Footer */}
             <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
               <button
@@ -2226,7 +2075,6 @@ function App() {
           </div>
         </div>
       )}
-
       {/* History Drawer */}
       {showHistory && (
         <div className="fixed inset-0 z-50 flex justify-end">
@@ -2257,7 +2105,6 @@ function App() {
                 </button>
               </div>
             </div>
-
             {/* List */}
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {history.length === 0 ? (
@@ -2295,7 +2142,6 @@ function App() {
                         <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded">失败</span>
                       )}
                     </div>
-
                     {record.success ? (
                       record.polishedText ? (
                         // 有LLM处理：显示双栏（原始 + 处理后）
@@ -2318,7 +2164,6 @@ function App() {
                               {record.originalText}
                             </p>
                           </div>
-
                           {/* 右侧：处理后文本 */}
                           <div className="flex flex-col min-h-0 bg-violet-50/30 rounded-lg p-2.5">
                             <div className="flex items-center justify-between mb-2">
@@ -2364,7 +2209,6 @@ function App() {
                 ))
               )}
             </div>
-
             {/* Copy Toast */}
             {copyToast && (
               <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
@@ -2374,7 +2218,6 @@ function App() {
           </div>
         </div>
       )}
-
       {/* Close Confirmation Dialog */}
       {showCloseDialog && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
@@ -2397,11 +2240,9 @@ function App() {
                 </button>
               </div>
             </div>
-
             {/* Dialog Body */}
             <div className="p-6 space-y-4">
               <p className="text-sm text-slate-600">您希望如何处理应用窗口？</p>
-
               <div className="space-y-3">
                 <button
                   onClick={() => handleCloseAction("minimize")}
@@ -2417,7 +2258,6 @@ function App() {
                     </div>
                   </div>
                 </button>
-
                 <button
                   onClick={() => handleCloseAction("close")}
                   className="w-full p-4 bg-slate-50 hover:bg-slate-100 border border-slate-100 hover:border-slate-200 rounded-xl text-left transition-all group"
@@ -2433,7 +2273,6 @@ function App() {
                   </div>
                 </button>
               </div>
-
               <label className="flex items-center gap-3 p-3 bg-slate-50/50 rounded-xl cursor-pointer hover:bg-slate-100/50 transition-colors">
                 <input
                   type="checkbox"
@@ -2447,7 +2286,6 @@ function App() {
           </div>
         </div>
       )}
-
       {/* Update Modal */}
       {showUpdateModal && updateInfo && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
@@ -2476,7 +2314,6 @@ function App() {
                 </button>
               </div>
             </div>
-
             {/* Modal Body */}
             <div className="p-6 space-y-4">
               {updateInfo.notes && (
@@ -2494,7 +2331,6 @@ function App() {
                   更新日志
                 </button>
               </p>
-
               {updateStatus === "downloading" && (
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm text-slate-600">
@@ -2509,7 +2345,6 @@ function App() {
                   </div>
                 </div>
               )}
-
               <div className="flex gap-3">
                 <button
                   onClick={() => {
@@ -2543,13 +2378,11 @@ function App() {
           </div>
         </div>
       )}
-
       {/* Settings Modal - 匹配当前界面风格 */}
       {showSettingsModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
           {/* 增加 max-h-[85vh] 确保上下有留白，flex flex-col 支持内部滚动 */}
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-
             {/* Modal Header - 与其他弹窗风格一致 */}
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-slate-50 to-gray-50 flex-shrink-0">
               <div className="flex items-center gap-3">
@@ -2568,10 +2401,8 @@ function App() {
                 <X size={18} />
               </button>
             </div>
-
             {/* Modal Body - flex-1 和 overflow-y-auto 启用内部滚动 */}
             <div className="p-4 space-y-4 overflow-y-auto flex-1">
-
               {/* 快捷键配置 - 双模式 */}
               <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-100">
                 <div className="flex items-center gap-3 mb-3">
@@ -2587,11 +2418,9 @@ function App() {
                     </div>
                   </div>
                 </div>
-
                 {/* 听写模式快捷键 - 并排显示长按和松手模式 */}
                 <div className="space-y-2 mb-3">
                   <label className="text-xs font-medium text-slate-600">听写模式（语音转文字）</label>
-
                   {/* 并排的两个快捷键配置 */}
                   <div className="grid grid-cols-2 gap-2">
                     {/* 左侧：长按录音 */}
@@ -2639,7 +2468,6 @@ function App() {
                         </button>
                       </div>
                     </div>
-
                     {/* 右侧：松手模式 */}
                     <div className="space-y-1">
                       <div className="text-[10px] text-slate-400 pl-1">松手模式 <span className="text-blue-500">省力版</span></div>
@@ -2696,7 +2524,7 @@ function App() {
                               smartCommandConfig,
                               assistantConfig,
                               asrConfig,
-                              dualHotkeyConfig: newConfig
+                              dualHotkeyConfig: newConfig,
                             });
                           }}
                           disabled={status !== 'idle'}
@@ -2708,13 +2536,11 @@ function App() {
                       </div>
                     </div>
                   </div>
-
                   {/* 说明文字 */}
                   <p className="text-[10px] text-slate-400 pl-1">
                     松手模式：按一下开始录音，再按一下或点击悬浮窗按钮完成
                   </p>
                 </div>
-
                 {/* AI 助手模式快捷键 */}
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-slate-600">AI 助手模式（智能处理）</label>
@@ -2750,7 +2576,6 @@ function App() {
                         ))
                       )}
                     </div>
-
                     <button
                       onClick={(e) => { e.stopPropagation(); resetHotkeyToDefault('assistant'); }}
                       disabled={status !== 'idle'}
@@ -2761,14 +2586,12 @@ function App() {
                     </button>
                   </div>
                 </div>
-
                 {hotkeyError && (
                   <div className="mt-2 flex items-center gap-1.5 p-2 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600 animate-in slide-in-from-top-2 fade-in duration-200">
                     <AlertCircle size={12} className="flex-shrink-0" />
                     <span>{hotkeyError}</span>
                   </div>
                 )}
-
                 {status !== 'idle' && (
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-600">
                     <AlertCircle size={12} />
@@ -2776,12 +2599,10 @@ function App() {
                   </div>
                 )}
               </div>
-
               {/* 服务配置入口 - 分组列表风格，与系统设置统一 */}
               <div className="space-y-2">
                 <div className="text-xs font-medium text-slate-500 px-1">服务配置</div>
                 <div className="bg-slate-50/80 rounded-xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-
                   {/* ASR 语音识别 */}
                   <button
                     onClick={() => {
@@ -2810,7 +2631,6 @@ function App() {
                       <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </button>
-
                   {/* LLM 润色 */}
                   <button
                     onClick={() => {
@@ -2839,7 +2659,6 @@ function App() {
                       <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </button>
-
                   {/* AI 助手 */}
                   <button
                     onClick={() => {
@@ -2870,12 +2689,10 @@ function App() {
                   </button>
                 </div>
               </div>
-
               {/* 系统设置分组 */}
               <div className="space-y-2">
                 <div className="text-xs font-medium text-slate-500 px-1">系统设置</div>
                 <div className="bg-slate-50/80 rounded-xl border border-slate-100 divide-y divide-slate-100 overflow-hidden">
-
                   {/* 开机自启动 */}
                   <div className="flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-colors">
                     <div className="flex items-center gap-3">
@@ -2903,7 +2720,6 @@ function App() {
                       />
                     </button>
                   </div>
-
                   {/* 录音时静音其他应用 */}
                   <div className="flex items-center justify-between p-3.5 hover:bg-slate-100/50 transition-colors">
                     <div className="flex items-center gap-3">
@@ -2932,7 +2748,6 @@ function App() {
                       />
                     </button>
                   </div>
-
                   {/* 检查更新 */}
                   <button
                     onClick={() => {
@@ -2983,7 +2798,6 @@ function App() {
                 </div>
               </div>
             </div>
-
             {/* Modal Footer */}
             <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100 flex-shrink-0">
               <p className="text-xs text-slate-400 text-center">
@@ -2993,7 +2807,6 @@ function App() {
           </div>
         </div>
       )}
-
       {/* Global Toast */}
       {copyToast && (
         <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-in fade-in zoom-in duration-200">
@@ -3003,5 +2816,4 @@ function App() {
     </div>
   );
 }
-
 export default App;

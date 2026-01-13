@@ -55,15 +55,6 @@ pub enum TriggerMode {
     AiAssistant,
 }
 
-impl TriggerMode {
-    /// 获取显示名称
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            TriggerMode::Dictation => "听写模式",
-            TriggerMode::AiAssistant => "AI助手模式",
-        }
-    }
-}
 
 // ============================================================================
 // 热键配置

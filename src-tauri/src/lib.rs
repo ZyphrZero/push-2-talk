@@ -138,6 +138,10 @@ async fn save_config(
     dictionary: Option<Vec<String>>,
 ) -> Result<String, String> {
     tracing::info!("保存配置...");
+
+    // 某些前端调用只会提交部分字段（例如仅更新热键/词库），这里用旧配置兜底避免意外清空。
+    let existing = AppConfig::load().unwrap_or_else(|_| AppConfig::new());
+
     let has_fallback = !fallback_api_key.is_empty();
     let config = AppConfig {
         dashscope_api_key: api_key.clone(),
@@ -161,17 +165,17 @@ async fn save_config(
             },
             enable_fallback: has_fallback,
         }),
-        use_realtime_asr: use_realtime.unwrap_or(true),
-        enable_llm_post_process: enable_post_process.unwrap_or(false),
-        llm_config: llm_config.unwrap_or_default(),
-        smart_command_config: smart_command_config.unwrap_or_default(),
-        assistant_config: assistant_config.unwrap_or_default(),
-        close_action,
+        use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
+        enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
+        llm_config: llm_config.unwrap_or(existing.llm_config),
+        smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
+        assistant_config: assistant_config.unwrap_or(existing.assistant_config),
+        close_action: close_action.or(existing.close_action),
         hotkey_config,
-        dual_hotkey_config: dual_hotkey_config.unwrap_or_default(),
-        transcription_mode: config::TranscriptionMode::default(),
-        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(false),
-        dictionary: dictionary.unwrap_or_default(),
+        dual_hotkey_config: dual_hotkey_config.unwrap_or(existing.dual_hotkey_config),
+        transcription_mode: existing.transcription_mode,
+        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
+        dictionary: dictionary.unwrap_or(existing.dictionary),
     };
 
     config
@@ -1997,14 +2001,13 @@ pub fn run() {
                 is_processing_stop: Arc::new(AtomicBool::new(false)),
                 audio_mute_manager: Arc::new(Mutex::new(None)),
             };
-            app.manage(app_state);
 
             // 创建托盘菜单
             let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            // 创建系统托盘
+            // 创建系统托盘图标
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -2032,6 +2035,8 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            app.manage(app_state);
 
             Ok(())
         })

@@ -237,10 +237,6 @@ impl AudioMuteManager {
         }
     }
 
-    /// 获取当前活跃会话数
-    pub fn active_session_count(&self) -> u32 {
-        self.active_sessions.load(Ordering::Relaxed)
-    }
 
     /// 静音所有其他音频应用
     /// 返回成功静音的应用数量
