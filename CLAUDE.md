@@ -39,6 +39,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **可以**直接使用 `windows` crate 调用 Win32 API
 - **可以**假设用户环境是 Windows 10/11
 
+### 版本兼容性原则
+
+**本项目是单机桌面应用，无需考虑版本向前/向后兼容。**
+
+- 用户通过自动更新升级后，直接运行新版本代码
+- 不存在"旧版客户端访问新版服务器"等分布式兼容场景
+- **放心修改**：数据结构、API 格式、配置字段等可直接调整，无需保留旧版兼容代码
+- **例外情况**：仅在配置文件迁移时需要考虑（如 config.rs 中的自动迁移逻辑，确保旧配置能正常加载）
+
 ---
 
 ## Project Overview

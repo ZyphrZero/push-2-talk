@@ -70,6 +70,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_Foundation",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",  # 焦点管理: GetForegroundWindow, SetForegroundWindow, IsWindow
+    "Win32_System_Threading",         # 焦点管理: GetCurrentThreadId, AttachThreadInput, GetWindowThreadProcessId
 ] }
 
 [features]

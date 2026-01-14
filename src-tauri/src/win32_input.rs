@@ -136,7 +136,181 @@ pub fn release_all_modifiers() -> Result<()> {
     Ok(())
 }
 
-// 非 Windows 平台的空实现（编译占位）
+// ==================== 焦点管理 API ====================
+// 用于在文本插入前确保目标窗口获得焦点
+
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, SetForegroundWindow, IsWindow,
+    GetWindowThreadProcessId,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{GetCurrentThreadId, AttachThreadInput};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
+
+/// 获取当前前台窗口句柄
+///
+/// # 返回值
+/// * `Some(isize)` - 前台窗口句柄（HWND 转为 isize 以便跨线程传递）
+/// * `None` - 没有前台窗口
+#[cfg(target_os = "windows")]
+pub fn get_foreground_window() -> Option<isize> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            None
+        } else {
+            Some(hwnd.0 as isize)
+        }
+    }
+}
+
+/// 检查窗口句柄是否有效
+#[cfg(target_os = "windows")]
+pub fn is_window_valid(hwnd: isize) -> bool {
+    unsafe { IsWindow(HWND(hwnd as *mut _)).as_bool() }
+}
+
+/// 验证当前前台窗口是否为指定窗口
+#[cfg(target_os = "windows")]
+pub fn verify_foreground_window(expected_hwnd: isize) -> bool {
+    get_foreground_window() == Some(expected_hwnd)
+}
+
+/// 强制设置前台窗口（使用多重策略）
+///
+/// 绕过 Windows 对 SetForegroundWindow 的限制
+///
+/// # 策略
+/// 1. 直接调用 SetForegroundWindow
+/// 2. 使用 AttachThreadInput 技巧
+/// 3. 使用 keybd_event(Alt) 技巧
+///
+/// # 参数
+/// * `hwnd` - 目标窗口句柄
+///
+/// # 返回值
+/// * `Ok(())` - 焦点恢复成功
+/// * `Err(e)` - 焦点恢复失败
+#[cfg(target_os = "windows")]
+pub fn force_foreground_window(hwnd: isize) -> Result<()> {
+    use std::ptr::null_mut;
+
+    // 检查窗口是否有效
+    if !is_window_valid(hwnd) {
+        anyhow::bail!("目标窗口已无效");
+    }
+
+    let target_hwnd = HWND(hwnd as *mut _);
+
+    unsafe {
+        // 策略1：直接尝试 SetForegroundWindow
+        if SetForegroundWindow(target_hwnd).as_bool() {
+            tracing::debug!("win32_input: SetForegroundWindow 直接成功");
+            return Ok(());
+        }
+
+        tracing::debug!(
+            "win32_input: SetForegroundWindow 直接调用失败，尝试 AttachThreadInput 技巧"
+        );
+
+        // 策略2：使用 AttachThreadInput 技巧
+        let current_thread = GetCurrentThreadId();
+        let target_thread = GetWindowThreadProcessId(target_hwnd, Some(null_mut()));
+
+        if target_thread == 0 {
+            tracing::warn!("win32_input: 无法获取目标窗口线程 ID");
+        } else {
+            // 附加到目标线程
+            let attached = AttachThreadInput(current_thread, target_thread, true).as_bool();
+
+            // 尝试设置前台窗口
+            let result = SetForegroundWindow(target_hwnd).as_bool();
+
+            // 分离线程（无论成功与否）
+            if attached {
+                let _ = AttachThreadInput(current_thread, target_thread, false);
+            }
+
+            if result {
+                tracing::debug!("win32_input: AttachThreadInput 技巧成功");
+                return Ok(());
+            }
+        }
+
+        // 策略3：keybd_event 技巧（最后手段）
+        tracing::debug!("win32_input: AttachThreadInput 技巧失败，尝试 keybd_event 技巧");
+
+        // 发送一个 Alt 按键事件，让系统认为当前进程在处理输入
+        let _ = send_key_down(VK_MENU);
+        thread::sleep(Duration::from_millis(5));
+        let _ = send_key_up(VK_MENU);
+        thread::sleep(Duration::from_millis(5));
+
+        // 再次尝试
+        if SetForegroundWindow(target_hwnd).as_bool() {
+            tracing::debug!("win32_input: keybd_event 技巧成功");
+            Ok(())
+        } else {
+            // 最后检查：可能焦点已经在目标窗口了
+            if verify_foreground_window(hwnd) {
+                tracing::debug!("win32_input: 焦点已在目标窗口");
+                Ok(())
+            } else {
+                anyhow::bail!("所有焦点恢复策略均失败")
+            }
+        }
+    }
+}
+
+/// 恢复目标窗口焦点（带验证和重试）
+///
+/// 尝试恢复焦点并验证是否成功
+///
+/// # 参数
+/// * `hwnd` - 目标窗口句柄
+/// * `max_retries` - 最大重试次数
+///
+/// # 返回值
+/// * `true` - 焦点恢复成功
+/// * `false` - 焦点恢复失败
+#[cfg(target_os = "windows")]
+pub fn restore_focus_with_verify(hwnd: isize, max_retries: u32) -> bool {
+    for attempt in 0..max_retries {
+        // 尝试恢复焦点
+        if let Err(e) = force_foreground_window(hwnd) {
+            tracing::warn!(
+                "win32_input: 焦点恢复尝试 {} 失败: {}",
+                attempt + 1,
+                e
+            );
+            thread::sleep(Duration::from_millis(30));
+            continue;
+        }
+
+        // 等待一小段时间让焦点稳定
+        thread::sleep(Duration::from_millis(30));
+
+        // 验证焦点
+        if verify_foreground_window(hwnd) {
+            tracing::info!(
+                "win32_input: 焦点恢复成功 (尝试 {})",
+                attempt + 1
+            );
+            return true;
+        }
+
+        tracing::debug!("win32_input: 焦点验证失败，重试...");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    tracing::warn!("win32_input: 焦点恢复失败，已达最大重试次数");
+    false
+}
+
+// ==================== 非 Windows 平台的空实现 ====================
+
 #[cfg(not(target_os = "windows"))]
 pub fn send_ctrl_c() -> Result<()> {
     anyhow::bail!("win32_input: 仅支持 Windows 平台")
@@ -150,6 +324,31 @@ pub fn send_ctrl_v() -> Result<()> {
 #[cfg(not(target_os = "windows"))]
 pub fn release_all_modifiers() -> Result<()> {
     anyhow::bail!("win32_input: 仅支持 Windows 平台")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn get_foreground_window() -> Option<isize> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_window_valid(_hwnd: isize) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn verify_foreground_window(_expected_hwnd: isize) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn force_foreground_window(_hwnd: isize) -> Result<()> {
+    anyhow::bail!("win32_input: 仅支持 Windows 平台")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn restore_focus_with_verify(_hwnd: isize, _max_retries: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
