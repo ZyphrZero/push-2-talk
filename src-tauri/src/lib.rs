@@ -62,11 +62,6 @@ fn get_cursor_position() -> Option<(i32, i32)> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn get_cursor_position() -> Option<(i32, i32)> {
-    None
-}
-
 fn find_monitor_at_cursor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
     let (cursor_x, cursor_y) = get_cursor_position()?;
     let monitors = window.available_monitors().ok()?;
