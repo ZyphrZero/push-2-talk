@@ -180,11 +180,11 @@ The Rust backend is organized into independent modules that communicate through 
    - Captures selected text via clipboard with **3 retry attempts** (exponential backoff)
    - **100ms delay** after hotkey release before Ctrl+C (prevents modifier key conflicts)
    - RAII `ClipboardGuard` ensures automatic restoration even on panic
-   - Uses `arboard` for clipboard operations + `enigo` for keyboard simulation
+   - Uses `arboard` for clipboard operations + `win32_input` (Win32 SendInput API) for keyboard simulation
 
 8. **text_inserter.rs** - Clipboard-based text injection
    - Strategy: Save clipboard → Copy text → Simulate Ctrl+V → Restore clipboard
-   - Uses `arboard` (clipboard) + `enigo` (keyboard simulation)
+   - Uses `arboard` (clipboard) + `win32_input` (Win32 SendInput API)
    - **Focus management**: 150ms delay before text insertion to restore window focus (for toggle mode)
 
 9. **audio_utils.rs** - Audio processing utilities

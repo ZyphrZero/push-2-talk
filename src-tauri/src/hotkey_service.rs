@@ -87,6 +87,7 @@ fn is_key_physically_down(key: &HotkeyKey) -> bool {
 }
 
 /// 检查一组按键是否全部物理按下
+#[cfg(target_os = "windows")]
 fn are_keys_physically_down(keys: &[HotkeyKey]) -> bool {
     keys.iter().all(|k| is_key_physically_down(k))
 }

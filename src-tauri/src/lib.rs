@@ -15,6 +15,7 @@ mod openai_client;
 mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
+mod win32_input;
 
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
