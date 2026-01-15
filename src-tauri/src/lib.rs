@@ -1081,7 +1081,12 @@ async fn handle_assistant_mode(
                 match rec.stop_recording_to_memory() {
                     Ok(data) => Some(data),
                     Err(e) => {
-                        emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                        if is_audio_skip_error(&e) {
+                            tracing::info!("音频已跳过: {}", e);
+                            hide_overlay_silently(&app);
+                        } else {
+                            emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                        }
                         None
                     }
                 }
@@ -1234,7 +1239,12 @@ async fn handle_http_transcription(
             match rec.stop_recording_to_memory() {
                 Ok(data) => Some(data),
                 Err(e) => {
-                    emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                    if is_audio_skip_error(&e) {
+                        tracing::info!("音频已跳过: {}", e);
+                        hide_overlay_silently(&app);
+                    } else {
+                        emit_error_and_hide_overlay(&app, format!("停止录音失败: {}", e));
+                    }
                     None
                 }
             }
@@ -1514,6 +1524,11 @@ fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
     let _ = app.emit("error", error_msg);
 
     // 隐藏悬浮窗，带重试机制
+    hide_overlay_silently(app);
+}
+
+/// 静默隐藏悬浮窗（不发送错误事件）
+fn hide_overlay_silently(app: &AppHandle) {
     if let Some(overlay) = app.get_webview_window("overlay") {
         if let Err(e) = overlay.hide() {
             tracing::error!("隐藏悬浮窗失败: {}", e);
@@ -1524,6 +1539,12 @@ fn emit_error_and_hide_overlay(app: &AppHandle, error_msg: String) {
             }
         }
     }
+}
+
+/// 检查错误是否为"音频跳过"类型（用户误触等正常情况）
+fn is_audio_skip_error(error: &anyhow::Error) -> bool {
+    let msg = error.to_string();
+    msg.contains("录音过短或无声音") || msg.contains("音频数据为空")
 }
 
 /// 转录完成事件的 payload

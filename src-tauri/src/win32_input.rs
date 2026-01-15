@@ -309,48 +309,6 @@ pub fn restore_focus_with_verify(hwnd: isize, max_retries: u32) -> bool {
     false
 }
 
-// ==================== 非 Windows 平台的空实现 ====================
-
-#[cfg(not(target_os = "windows"))]
-pub fn send_ctrl_c() -> Result<()> {
-    anyhow::bail!("win32_input: 仅支持 Windows 平台")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn send_ctrl_v() -> Result<()> {
-    anyhow::bail!("win32_input: 仅支持 Windows 平台")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn release_all_modifiers() -> Result<()> {
-    anyhow::bail!("win32_input: 仅支持 Windows 平台")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn get_foreground_window() -> Option<isize> {
-    None
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn is_window_valid(_hwnd: isize) -> bool {
-    false
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn verify_foreground_window(_expected_hwnd: isize) -> bool {
-    false
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn force_foreground_window(_hwnd: isize) -> Result<()> {
-    anyhow::bail!("win32_input: 仅支持 Windows 平台")
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn restore_focus_with_verify(_hwnd: isize, _max_retries: u32) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
