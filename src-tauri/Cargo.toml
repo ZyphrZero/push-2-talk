@@ -1,6 +1,6 @@
 [package]
 name = "push-to-talk"
-version = "1.5.0"
+version = "1.5.1"
 description = "A push-to-talk speech-to-text application"
 authors = ["you"]
 license = ""

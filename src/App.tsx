@@ -40,6 +40,7 @@ import { DictionaryPage } from "./pages/DictionaryPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
+import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
 function App() {
   const [currentVersion, setCurrentVersion] = useState(() =>
@@ -529,6 +530,8 @@ function App() {
             }}
           />
         );
+      case "help":
+        return <HelpPage />;
       default:
         return null;
     }

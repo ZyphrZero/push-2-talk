@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Wand2,
+  HelpCircle,
 } from "lucide-react";
 
 export type SidebarProps = {
@@ -149,6 +150,15 @@ export function Sidebar({
         >
           <SlidersHorizontal className="shrink-0 w-5 h-5" />
           <span className={navTextClass}>偏好设置</span>
+        </button>
+
+        <button
+          onClick={() => onNavigate("help")}
+          className={navItem("help")}
+          title="帮助与支持"
+        >
+          <HelpCircle className="shrink-0 w-5 h-5" />
+          <span className={navTextClass}>帮助与支持</span>
         </button>
 
         <div

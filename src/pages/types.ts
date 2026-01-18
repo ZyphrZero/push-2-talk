@@ -6,4 +6,5 @@ export type AppPage =
   | "hotkeys"
   | "preferences"
   | "dictionary"
-  | "history";
+  | "history"
+  | "help";
