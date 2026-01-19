@@ -333,3 +333,20 @@ select,
   transition: none !important;
   will-change: height;
 }
+
+/* ========== 更新通知红点动画 ========== */
+
+@layer utilities {
+  @keyframes pulse-scale {
+    0%, 100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.2);
+    }
+  }
+
+  .animate-pulse-scale {
+    animation: pulse-scale 1.5s ease-in-out infinite;
+  }
+}

@@ -1,4 +1,5 @@
 import type { AppPage } from "../../pages/types";
+import type { UpdateStatus } from "../../types";
 import {
   BookText,
   History,
@@ -12,6 +13,7 @@ import {
   Wand2,
   HelpCircle,
 } from "lucide-react";
+import { RedDot } from "../common/RedDot";
 
 export type SidebarProps = {
   collapsed: boolean;
@@ -19,6 +21,8 @@ export type SidebarProps = {
 
   activePage: AppPage;
   onNavigate: (page: AppPage) => void;
+
+  updateStatus?: UpdateStatus;
 };
 
 export function Sidebar({
@@ -26,6 +30,7 @@ export function Sidebar({
   onToggleCollapsed,
   activePage,
   onNavigate,
+  updateStatus,
 }: SidebarProps) {
   const containerWidth = collapsed ? "w-[72px]" : "w-60";
 
@@ -148,7 +153,14 @@ export function Sidebar({
           className={navItem("preferences")}
           title="偏好设置"
         >
-          <SlidersHorizontal className="shrink-0 w-5 h-5" />
+          <div className="relative">
+            <SlidersHorizontal className="shrink-0 w-5 h-5" />
+            {updateStatus === "available" && (
+              <div className="absolute -top-0.5 -right-0.5">
+                <RedDot size="sm" />
+              </div>
+            )}
+          </div>
           <span className={navTextClass}>偏好设置</span>
         </button>
 

@@ -40,7 +40,11 @@ export function useUpdater({ onToast, onError }: UseUpdaterParams) {
             notes: update.body || undefined,
           });
           setUpdateStatus("available");
-          if (openModal) setShowUpdateModal(true);
+          if (openModal) {
+            setShowUpdateModal(true);
+          } else {
+            onToast(`发现新版本 v${update.version}`);
+          }
         } else {
           setUpdateStatus("idle");
           if (!silentOnNoUpdate) onToast("当前已是最新版本");

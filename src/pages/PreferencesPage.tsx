@@ -1,6 +1,7 @@
 import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX } from "lucide-react";
 import type { AppStatus, UpdateStatus } from "../types";
 import { Toggle } from "../components/common";
+import { RedDot } from "../components/common/RedDot";
 
 export type PreferencesPageProps = {
   status: AppStatus;
@@ -117,6 +118,7 @@ export function PreferencesPage({
             >
               {updateStatus === "checking" ? <RefreshCw size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               检查
+              {updateStatus === "available" && <RedDot size="md" />}
             </button>
           </div>
         </div>
