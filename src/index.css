@@ -7,8 +7,10 @@
   --ink: #141413;
   --paper: #FAF9F5;
   --sand: #E8E6DC;
-  --stone: var(--sand); /* legacy: borders/dividers */
-  --stone-dark: #B0AEA5; /* legacy: secondary text */
+  --stone: var(--sand);
+  /* legacy: borders/dividers */
+  --stone-dark: #B0AEA5;
+  /* legacy: secondary text */
 
   /* Accents */
   --crail: #D97757;
@@ -92,9 +94,11 @@ select,
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
 }
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
   background-color: var(--stone);
   border-radius: 20px;
@@ -104,9 +108,11 @@ select,
 .custom-scroll::-webkit-scrollbar {
   width: 4px;
 }
+
 .custom-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .custom-scroll::-webkit-scrollbar-thumb {
   background: var(--stone);
   border-radius: 10px;
@@ -150,25 +156,30 @@ select,
   background: transparent;
 }
 
-/* 胶囊形状容器 - iOS风格 */
+/* 胶囊形状容器 - Solid Matte (实体哑光) 风格 */
+/* 胶囊形状容器 - Solid Matte (实体哑光) 风格 */
 .overlay-pill {
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 4px 16px;
-  background: rgba(20, 20, 19, 0.95);
-  border-radius: 22px;
+  /* 纯正的 Ink 色 (暖黑) */
+  background: var(--ink);
+  /* 边框使用 Sand 色 (纸浆色) 的微弱不透明度，而非冷白 */
+  border: 1px solid rgba(232, 230, 220, 0.15);
+  border-radius: 24px;
   width: 120px;
-  height: 44px;
+  height: 48px;
   box-sizing: border-box;
   font-family: var(--font-sans);
-  /* 精致的阴影效果 */
+
+  /* 物理投影 - 锐利且深沉 */
   box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(255, 255, 255, 0.1);
+    0 4px 12px rgba(0, 0, 0, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.2);
+
   /* 平滑过渡动画 */
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              background 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* ========== 声波条样式 ========== */
@@ -185,8 +196,9 @@ select,
   width: 3px;
   min-height: 3px;
   border-radius: 2px;
-  background: white;
-  /* 关键：禁用 CSS transition，完全由 JS 控制动画 */
+  background: var(--paper);
+  /* 移除发光效果，保持哑光质感 */
+  opacity: 0.95;
   transition: none !important;
   will-change: height;
 }
@@ -212,15 +224,18 @@ select,
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(250, 249, 245, 0.8);
   animation: dot-pulse 1s ease-in-out infinite;
 }
 
 @keyframes dot-pulse {
-  0%, 100% {
-    opacity: 0.3;
+
+  0%,
+  100% {
+    opacity: 0.4;
     transform: scale(0.8);
   }
+
   50% {
     opacity: 1;
     transform: scale(1);
@@ -231,7 +246,8 @@ select,
 .spinner-icon {
   width: 18px;
   height: 18px;
-  color: white;
+  color: var(--paper);
+  opacity: 1;
   animation: spin 1.5s linear infinite;
 }
 
@@ -244,6 +260,7 @@ select,
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
@@ -251,14 +268,17 @@ select,
 
 /* ========== 松手模式样式 ========== */
 
-/* 锁定模式悬浮窗 - 宽度 160px + 蓝色渐变 */
+/* 锁定模式悬浮窗 - 亦使用实体风格 */
 .overlay-pill-locked {
-  width: 160px;
-  padding: 4px 8px;
-  background: linear-gradient(135deg, rgba(20, 20, 19, 0.96), rgba(25, 37, 55, 0.92));
+  width: 170px;
+  padding: 4px 10px;
+  /* 纯正 Ink 背景 */
+  background: var(--ink);
+  /* Sand 色边框 */
+  border: 1px solid rgba(232, 230, 220, 0.15);
   box-shadow:
-    0 6px 24px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(106, 155, 204, 0.32);
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* 锁定控制容器 */
@@ -268,49 +288,66 @@ select,
   justify-content: space-between;
   width: 100%;
   height: 100%;
-  gap: 6px;
+  gap: 8px;
 }
 
-/* 按钮基础样式 - 36px 饱满按钮 */
+/* 按钮基础样式 - 显性的圆形边框 */
 .locked-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
+  /* Sand 色微弱边框 */
+  border: 1px solid rgba(232, 230, 220, 0.12);
+  /* 极其微弱的 Sand 色背景 */
+  background: rgba(232, 230, 220, 0.04);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
-  box-shadow:
-    0 2px 10px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .locked-btn:not(:disabled):hover {
-  transform: scale(1.08);
-  background: rgba(255, 255, 255, 0.09);
+  transform: scale(1.05);
+  /* Hover 时增强 Sand 色感 */
+  background: rgba(232, 230, 220, 0.1);
+  border-color: rgba(232, 230, 220, 0.25);
 }
 
 .locked-btn:not(:disabled):active {
-  transform: scale(0.92);
+  transform: scale(0.96);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .locked-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.4;
+  border-color: rgba(255, 255, 255, 0.05);
 }
 
-/* 取消按钮 - 红色 */
+/* 取消按钮 */
 .locked-btn-cancel {
-  color: rgba(248, 113, 113, 1);
+  color: var(--crail);
 }
 
-/* 完成按钮 - 绿色 */
+.locked-btn-cancel:not(:disabled):hover {
+  color: #EFA690;
+  background: rgba(217, 119, 87, 0.12);
+  border-color: rgba(217, 119, 87, 0.3);
+  /* 边框也跟随变色 */
+}
+
+/* 完成按钮 - Sage (鼠尾草绿) */
 .locked-btn-finish {
-  color: rgba(74, 222, 128, 1);
+  color: var(--sage);
+}
+
+.locked-btn-finish:not(:disabled):hover {
+  color: #A9BD8C;
+  background: rgba(120, 140, 93, 0.12);
+  border-color: rgba(120, 140, 93, 0.3);
+  /* 边框也跟随变色 */
 }
 
 /* 迷你声波 - 5 条紧凑布局 */
@@ -328,19 +365,27 @@ select,
   min-height: 3px;
   max-height: 26px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--paper);
+  /* 统一使用 Paper 色 */
+  opacity: 0.95;
+  box-shadow: none;
   /* 关键：禁用 CSS transition，完全由 JS 控制动画 */
   transition: none !important;
   will-change: height;
 }
 
+
+
 /* ========== 更新通知红点动画 ========== */
 
 @layer utilities {
   @keyframes pulse-scale {
-    0%, 100% {
+
+    0%,
+    100% {
       transform: scale(1);
     }
+
     50% {
       transform: scale(1.2);
     }
