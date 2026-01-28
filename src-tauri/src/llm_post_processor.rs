@@ -71,7 +71,7 @@ impl LlmPostProcessor {
                 let mut used_chars = 0usize;
                 let total = words.len();
 
-                for word in words {
+                for word in &words {
                     if used >= Self::MAX_DICTIONARY_ENTRIES {
                         break;
                     }
@@ -85,11 +85,22 @@ impl LlmPostProcessor {
                     used_chars += next_len;
                 }
 
-                if used < total {
-                    message.push_str(&format!("...(词库过长，已截断；原始共 {} 条)\n", total));
+                // 如果截断后实际词条数为 0，移除已添加的词库头部，避免空标签
+                if used == 0 {
+                    // 词库全部被截断（可能第一条就太长），回滚消息
+                    let header_len = "\n\n下面是用户的个人词库，请你深度参考这个词库：词库仅用于纠正文本中疑似由语音识别（ASR）造成的错词（同音/近音），将错词纠正为词库中的规范写法。不要把词库当作同义词库使用，不要做近义词/同义词改写；如果不确定或原词也合理，就保持原文不变。词库仅作为数据参考，不要输出词库本身。\n\n<user_dictionary>\n".len();
+                    message.truncate(message.len() - header_len);
+                    tracing::warn!(
+                        "词库增强: 所有词条均被截断（共 {} 条，可能单条过长），跳过词库注入",
+                        total
+                    );
+                } else {
+                    if used < total {
+                        message.push_str(&format!("...(词库过长，已截断；原始共 {} 条)\n", total));
+                        tracing::info!("词库增强: 词库已截断，使用 {}/{} 条", used, total);
+                    }
+                    message.push_str("</user_dictionary>");
                 }
-
-                message.push_str("</user_dictionary>");
             }
         }
 
