@@ -186,7 +186,7 @@ export function TranscriptDisplay({
 
         {originalTranscript ? (
           <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col border-r border-[var(--stone)] pr-4">
+            <div className="flex flex-col border-r border-[var(--stone)] ">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-xs text-stone-400 flex items-center gap-1">
                   <Mic size={12} /> {currentMode === "assistant" ? "用户问题" : "原始转录"}
