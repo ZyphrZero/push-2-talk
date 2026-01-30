@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http, MaybeTlsStream, WebSocketStream};
 use tokio::net::TcpStream;
+use crate::dictionary_utils::entries_to_words;
 
 // WebSocket 写入端类型别名
 type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -137,14 +138,15 @@ impl ConnectionPool {
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
 
         // 发送 session.update 配置会话
-        // 词库用顿号分隔
-        let corpus_text = self.dictionary.join("、");
+        // 词库提纯（去除 |auto 后缀）后用顿号分隔
+        let purified_words = entries_to_words(&self.dictionary);
+        let corpus_text = purified_words.join("、");
 
         let mut input_audio_transcription = serde_json::json!({
             "language": "zh"
         });
         if !corpus_text.is_empty() {
-            tracing::info!("Qwen 流式 ASR 词库: {} 个词, corpus={}", self.dictionary.len(), corpus_text);
+            tracing::info!("Qwen 流式 ASR 词库: {} 个词（已提纯）, corpus={}", purified_words.len(), corpus_text);
             input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
         } else {
             tracing::info!("Qwen 流式 ASR 词库: 未配置");

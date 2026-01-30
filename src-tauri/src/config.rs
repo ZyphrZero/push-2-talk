@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-// 词典相关函数已移至 learning::store 模块
+// 词典相关函数已移至独立的 dictionary_utils 模块
 
 // ============================================================================
 // 全局配置操作锁

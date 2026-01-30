@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, tungstenite::http};
+use crate::dictionary_utils::entries_to_words;
 
 const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
@@ -87,13 +88,14 @@ impl DoubaoRealtimeClient {
         // 发送 Full Client Request
         let mut request_obj = serde_json::json!({"model_name": "bigmodel", "enable_itn": true, "enable_punc": true});
 
-        // 添加词库支持
+        // 添加词库支持（提纯后）
         if !self.dictionary.is_empty() {
-            let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+            let purified_words = entries_to_words(&self.dictionary);
+            let hotwords: Vec<serde_json::Value> = purified_words.iter()
                 .map(|w| serde_json::json!({"word": w}))
                 .collect();
             let context = serde_json::json!({"hotwords": hotwords}).to_string();
-            tracing::info!("豆包流式 ASR 词库: {} 个词, context={}", self.dictionary.len(), context);
+            tracing::info!("豆包流式 ASR 词库: {} 个词（已提纯）, context={}", purified_words.len(), context);
             request_obj["corpus"] = serde_json::json!({"context": context});
         } else {
             tracing::info!("豆包流式 ASR 词库: 未配置");

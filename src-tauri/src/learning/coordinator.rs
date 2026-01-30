@@ -246,7 +246,7 @@ pub fn start_learning_observation(
         let dictionary_word_set: HashSet<String> = app_config
             .dictionary
             .iter()
-            .map(|entry| crate::learning::store::extract_word(entry).trim().to_string())
+            .map(|entry| crate::dictionary_utils::extract_word(entry).trim().to_string())
             .filter(|w| !w.is_empty())
             .collect();
 
@@ -346,7 +346,7 @@ pub fn start_learning_observation(
             }
 
             // 检查词库是否已存在该词（使用预计算的 HashSet 进行 O(1) 查找）
-            let normalized_word = crate::learning::store::normalize_word(&word);
+            let normalized_word = crate::dictionary_utils::normalize_word(&word);
             if dictionary_word_set.contains(&normalized_word) {
                 tracing::info!(
                     "Learning [{}]: 词汇 \"{}\" 已存在于词库，跳过通知",

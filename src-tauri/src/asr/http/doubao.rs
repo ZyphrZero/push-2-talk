@@ -1,6 +1,7 @@
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use crate::asr::utils;
+use crate::dictionary_utils::entries_to_words;
 
 const DOUBAO_API_URL: &str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 const RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
@@ -32,13 +33,14 @@ impl DoubaoASRClient {
         let audio_base64 = general_purpose::STANDARD.encode(audio_data);
         tracing::info!("豆包 ASR: 音频数据大小 {} bytes", audio_data.len());
 
-        // 构建词库 hotwords JSON
+        // 构建词库 hotwords JSON（提纯后）
         let corpus = if !self.dictionary.is_empty() {
-            let hotwords: Vec<serde_json::Value> = self.dictionary.iter()
+            let purified_words = entries_to_words(&self.dictionary);
+            let hotwords: Vec<serde_json::Value> = purified_words.iter()
                 .map(|w| serde_json::json!({"word": w}))
                 .collect();
             let context = serde_json::json!({"hotwords": hotwords}).to_string();
-            tracing::info!("豆包 HTTP ASR 词库: {} 个词, context={}", self.dictionary.len(), context);
+            tracing::info!("豆包 HTTP ASR 词库: {} 个词（已提纯）, context={}", purified_words.len(), context);
             Some(serde_json::json!({"context": context}))
         } else {
             tracing::info!("豆包 HTTP ASR 词库: 未配置");

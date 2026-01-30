@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::config::LlmConfig;
 use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
+use crate::dictionary_utils::entries_to_words;
 
 /// LLM 文本润色处理器
 ///
@@ -132,7 +133,10 @@ impl LlmPostProcessor {
         message.push_str("<dictionary>\n");
 
         if enable_dictionary_enhancement {
-            let mut words: Vec<&str> = dictionary
+            // 提纯词库（去除 |auto 后缀）
+            let purified_words = entries_to_words(dictionary);
+
+            let mut words: Vec<&str> = purified_words
                 .iter()
                 .map(|w| w.trim())
                 .filter(|w| !w.is_empty())

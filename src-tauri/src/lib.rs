@@ -9,6 +9,7 @@ mod audio_utils;
 mod beep_player;
 mod clipboard_manager;
 mod config;
+mod dictionary_utils;
 mod hotkey_service;
 mod learning;
 mod llm_post_processor;
@@ -2659,7 +2660,7 @@ async fn add_learned_word(
     source: String,
 ) -> Result<(), String> {
     use crate::config::CONFIG_LOCK;
-    use crate::learning::store::{entries_to_words, upsert_entry};
+    use crate::dictionary_utils::{entries_to_words, upsert_entry};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
 
@@ -2715,7 +2716,7 @@ async fn delete_dictionary_entries(
     words: Vec<String>,
 ) -> Result<(), String> {
     use crate::config::CONFIG_LOCK;
-    use crate::learning::store::{entries_to_words, remove_entries};
+    use crate::dictionary_utils::{entries_to_words, remove_entries};
 
     tracing::info!("删除词典条目: {:?}", words);
 
