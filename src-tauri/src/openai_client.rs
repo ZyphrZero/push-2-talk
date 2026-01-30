@@ -279,7 +279,7 @@ mod tests {
 
         let polishing = ChatOptions::for_polishing();
         assert_eq!(polishing.max_tokens, 2048);
-        assert_eq!(polishing.temperature, 0.3);
+        assert_eq!(polishing.temperature, 0.7);
 
         let smart = ChatOptions::for_smart_command();
         assert_eq!(smart.max_tokens, 2048);

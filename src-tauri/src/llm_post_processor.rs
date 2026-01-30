@@ -293,7 +293,7 @@ mod tests {
             "张三".to_string(),
         ];
         let msg = LlmPostProcessor::build_user_message("你好", &dict, true);
-        assert!(msg.contains("<user_dictionary>"));
+        assert!(msg.contains("<dictionary>"));
         assert!(msg.contains("张三"));
         assert!(msg.contains("北京"));
         assert!(msg.contains("<source_text>"));

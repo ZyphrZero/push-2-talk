@@ -559,6 +559,9 @@ pub struct AppConfig {
     /// 自动词库学习配置
     #[serde(default)]
     pub learning_config: LearningConfig,
+    /// TNL 技术规范化层配置
+    #[serde(default)]
+    pub tnl_config: TnlConfig,
     /// 关闭行为: "close" = 直接关闭, "minimize" = 最小化到托盘, None = 每次询问
     #[serde(default)]
     pub close_action: Option<String>,
@@ -622,6 +625,30 @@ impl Default for LearningConfig {
             observation_duration_secs: default_observation_duration_secs(),
             llm_endpoint: None,
             feature_override: LlmFeatureConfig::default(),
+        }
+    }
+}
+
+// ============================================================================
+// TNL 技术规范化层配置
+// ============================================================================
+
+/// TNL 技术规范化层配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TnlConfig {
+    /// 是否启用 TNL（默认启用）
+    #[serde(default = "default_enable_tnl")]
+    pub enabled: bool,
+}
+
+fn default_enable_tnl() -> bool {
+    true
+}
+
+impl Default for TnlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enable_tnl(),
         }
     }
 }
@@ -1164,6 +1191,7 @@ impl AppConfig {
             smart_command_config: SmartCommandConfig::default(),
             assistant_config: AssistantConfig::default(),
             learning_config: LearningConfig::default(),
+            tnl_config: TnlConfig::default(),
             close_action: None,
             hotkey_config: None,
             dual_hotkey_config: DualHotkeyConfig::default(),

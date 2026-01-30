@@ -17,6 +17,7 @@ mod openai_client;
 mod pipeline;
 mod streaming_recorder;
 mod text_inserter;
+mod tnl;
 mod uia_text_reader;
 mod usage_stats;
 mod win32_input;
@@ -247,6 +248,7 @@ async fn save_config(
         smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
         assistant_config: final_assistant_config,
         learning_config: learning_config.unwrap_or(existing.learning_config),
+        tnl_config: existing.tnl_config,
         close_action: close_action.or(existing.close_action),
         hotkey_config,
         dual_hotkey_config: final_dual_hotkey_config,
