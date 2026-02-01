@@ -11,7 +11,7 @@ import type {
 import type { AppPage } from "../../pages/types";
 import { ASR_PROVIDERS } from "../../constants";
 import { formatHotkeyDisplay, formatHotkeyKeysDisplay } from "../../utils";
-import { Toggle, ConfigSelect, ConfigToggle, Tooltip } from "../common";
+import { ConfigSelect, ConfigToggle, Tooltip } from "../common";
 import { useConfigSave } from "../../contexts/ConfigSaveContext";
 
 // 首页词库最多显示的词条数（约两行）
@@ -66,7 +66,7 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
 
-  const { saveImmediately, syncStatus } = useConfigSave();
+  const { saveImmediately } = useConfigSave();
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -93,7 +93,6 @@ export function RightPanel({
               },
             });
           }}
-          syncStatus={syncStatus}
           disabled={isRunning}
           options={[
             {
@@ -145,9 +144,12 @@ export function RightPanel({
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
-            <Toggle
+            <ConfigToggle
               checked={enablePostProcess}
               onCheckedChange={setEnablePostProcess}
+              onCommit={async (checked) => {
+                await saveImmediately({ enablePostProcess: checked });
+              }}
               disabled={isRunning}
               size="sm"
               variant="orange"
@@ -177,9 +179,12 @@ export function RightPanel({
                 <HelpCircle className="w-3.5 h-3.5 text-stone-400 hover:text-stone-600 transition-colors cursor-help" />
               </Tooltip>
             </div>
-            <Toggle
+            <ConfigToggle
               checked={enableDictionaryEnhancement}
               onCheckedChange={setEnableDictionaryEnhancement}
+              onCommit={async (checked) => {
+                await saveImmediately({ enableDictionaryEnhancement: checked });
+              }}
               disabled={isRunning}
               size="sm"
               variant="orange"
@@ -220,7 +225,6 @@ export function RightPanel({
               // onCommit 只负责保存，不重复触发 setState
               await saveImmediately({ useRealtime: checked });
             }}
-            syncStatus={syncStatus}
             disabled={isRunning}
             size="sm"
             variant="amber"

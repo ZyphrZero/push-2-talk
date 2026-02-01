@@ -306,9 +306,9 @@ export function useAppServiceController({
         setAsrConfig(config.asr_config);
       }
 
-      setUseRealtime(config.use_realtime_asr ?? true);
+      setUseRealtime(config.use_realtime_asr ?? false);
       setEnablePostProcess(config.enable_llm_post_process ?? false);
-      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? true);
+      setEnableDictionaryEnhancement(config.enable_dictionary_enhancement ?? false);
 
       // 智能补齐 llm_config
       const loadedLlmConfig = config.llm_config || DEFAULT_LLM_CONFIG;
@@ -502,6 +502,7 @@ export function useAppServiceController({
     enableMuteOtherApps,
     dictionary,
     builtinDictionaryDomains,
+    theme,
     status,
     flashSuccessToast,
     setError,
@@ -616,9 +617,11 @@ export function useAppServiceController({
     enableMuteOtherApps,
     dictionary,
     builtinDictionaryDomains,
+    theme,
     status,
     setDictionary,
     setBuiltinDictionaryDomains,
+    setTheme,
     setError,
     startApp,
     stopApp,

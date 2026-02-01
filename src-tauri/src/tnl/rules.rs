@@ -31,6 +31,9 @@ impl SpokenSymbolMap {
         // 冒号
         map.insert("冒号", ':');
         map.insert("冒號", ':'); // 繁体
+        // @ 符号（邮箱）
+        map.insert("艾特", '@');
+        map.insert("at", '@');
 
         Self { map }
     }
@@ -128,6 +131,8 @@ mod tests {
         assert_eq!(map.try_map("杠"), Some('-'));
         assert_eq!(map.try_map("斜杠"), Some('/'));
         assert_eq!(map.try_map("下划线"), Some('_'));
+        assert_eq!(map.try_map("艾特"), Some('@'));
+        assert_eq!(map.try_map("at"), Some('@'));
         assert_eq!(map.try_map("无效"), None);
     }
 

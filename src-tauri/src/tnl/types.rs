@@ -54,6 +54,8 @@ pub enum SpanType {
     Path,
     /// 版本号（如 1.2.3）
     Version,
+    /// 邮箱地址（如 test@example.com）
+    Email,
     /// 通用技术串
     Technical,
 }

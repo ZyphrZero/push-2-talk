@@ -17,4 +17,3 @@ mod tokenizer;
 mod types;
 
 pub use engine::TnlEngine;
-pub use types::{NormalizationResult, Replacement, Span};

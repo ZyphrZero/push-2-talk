@@ -31,6 +31,9 @@ impl TechSpanDetector {
         // 策略 3: 检测版本号模式 (v1.2.3 或 1.2.3)
         spans.extend(self.detect_versions(text, tokens));
 
+        // 策略 4: 检测邮箱模式 (xxx@xxx.xxx 或 xxx艾特xxx点xxx)
+        spans.extend(self.detect_emails(text, tokens));
+
         // 去重并合并重叠片段
         self.merge_overlapping(spans)
     }
@@ -203,6 +206,80 @@ impl TechSpanDetector {
         spans
     }
 
+    /// 检测邮箱模式
+    ///
+    /// 识别 xxx@xxx.xxx 或 xxx艾特xxx点xxx 模式
+    fn detect_emails(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        // 查找 @ 或 "艾特" 或 "at"
+        for (i, token) in tokens.iter().enumerate() {
+            let is_at = token.text == "@" || token.text == "艾特" || token.text.to_lowercase() == "at";
+            if !is_at {
+                continue;
+            }
+
+            // 向前查找用户名部分（ASCII，跳过空白）
+            let prev_idx = self.find_prev_ascii(tokens, i);
+            // 向后查找域名部分
+            let domain_result = self.find_email_domain(tokens, i);
+
+            if let (Some(prev), Some((domain_end_idx, has_dot))) = (prev_idx, domain_result) {
+                // 邮箱必须有点号（xxx.com）
+                if has_dot {
+                    let start = tokens[prev].start;
+                    let end = tokens[domain_end_idx].end;
+                    spans.push(Span {
+                        text: text[start..end].to_string(),
+                        start,
+                        end,
+                        span_type: SpanType::Email,
+                    });
+                }
+            }
+        }
+
+        spans
+    }
+
+    /// 查找邮箱域名部分
+    ///
+    /// 返回 (结束 token 索引, 是否包含点号)
+    fn find_email_domain(&self, tokens: &[Token], from: usize) -> Option<(usize, bool)> {
+        let mut last_ascii_idx: Option<usize> = None;
+        let mut has_dot = false;
+        let mut j = from + 1;
+
+        while j < tokens.len() {
+            let t = &tokens[j];
+
+            // 跳过空白
+            if t.token_type == TokenType::Whitespace {
+                j += 1;
+                continue;
+            }
+
+            // 检查点号或口语"点"
+            if t.text == "." || t.text == "点" || t.text == "點" {
+                has_dot = true;
+                j += 1;
+                continue;
+            }
+
+            // 检查 ASCII（域名部分）
+            if t.token_type == TokenType::Ascii {
+                last_ascii_idx = Some(j);
+                j += 1;
+                continue;
+            }
+
+            // 遇到其他字符，结束
+            break;
+        }
+
+        last_ascii_idx.map(|idx| (idx, has_dot))
+    }
+
     /// 向前查找最近的 ASCII token（跳过空白）
     fn find_prev_ascii(&self, tokens: &[Token], from: usize) -> Option<usize> {
         if from == 0 {
@@ -308,5 +385,24 @@ mod tests {
 
         assert!(!spans.is_empty());
         assert!(spans.iter().any(|s| s.span_type == SpanType::Version));
+    }
+
+    #[test]
+    fn test_detect_email() {
+        let detector = TechSpanDetector::default();
+
+        // 测试口语邮箱
+        let text = "1045535878 艾特 qq 点 com";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+        assert!(!spans.is_empty());
+        assert!(spans.iter().any(|s| s.span_type == SpanType::Email));
+
+        // 测试标准邮箱
+        let text2 = "test@example.com";
+        let tokens2 = Tokenizer::tokenize(text2);
+        let spans2 = detector.detect(text2, &tokens2);
+        assert!(!spans2.is_empty());
+        assert!(spans2.iter().any(|s| s.span_type == SpanType::Email));
     }
 }

@@ -169,9 +169,9 @@ impl TnlEngine {
 
     /// 清理符号前后的空格（仅在技术片段内）
     fn clean_spaces_around_symbols(&self, text: &str, _tech_spans: &[Span]) -> String {
-        // 简化实现：移除 . - / _ 前后的空格
+        // 简化实现：移除 . - / _ : @ 前后的空格
         let mut result = text.to_string();
-        for symbol in ['.', '-', '/', '_', ':'] {
+        for symbol in ['.', '-', '/', '_', ':', '@'] {
             result = result.replace(&format!(" {}", symbol), &symbol.to_string());
             result = result.replace(&format!("{} ", symbol), &symbol.to_string());
         }
@@ -256,5 +256,33 @@ mod tests {
             "耗时 {}us 超过 10ms",
             result.elapsed_us
         );
+    }
+
+    #[test]
+    fn test_normalize_email() {
+        let engine = TnlEngine::default();
+
+        // 测试口语邮箱
+        let result = engine.normalize("1045535878 艾特 qq 点 com");
+        assert!(result.changed);
+        assert_eq!(result.text, "1045535878@qq.com");
+
+        // 测试带空格的邮箱
+        let result2 = engine.normalize("test 艾特 example 点 com");
+        assert!(result2.changed);
+        assert_eq!(result2.text, "test@example.com");
+    }
+
+    #[test]
+    fn test_no_false_positive_at() {
+        let engine = TnlEngine::default();
+
+        // "I AM At the school" 不应该被转换
+        let result = engine.normalize("I AM At the school");
+        assert!(!result.changed || result.text == "I AM At the school");
+
+        // "Look at this" 不应该被转换
+        let result2 = engine.normalize("Look at this");
+        assert!(!result2.changed || result2.text == "Look at this");
     }
 }
