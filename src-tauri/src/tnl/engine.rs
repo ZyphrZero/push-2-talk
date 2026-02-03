@@ -18,7 +18,6 @@ pub struct TnlEngine {
     /// 技术片段检测器
     tech_span_detector: TechSpanDetector,
     /// 模糊匹配器（可选）
-    #[allow(dead_code)]
     fuzzy_matcher: Option<FuzzyMatcher>,
 }
 
@@ -72,16 +71,20 @@ impl TnlEngine {
         let (mapped_text, symbol_replacements) =
             self.apply_spoken_symbol_mapping(&normalized, &tokens, &tech_spans);
 
-        // 5. 模糊匹配（可选，目前仅记录建议）
-        let suggested = self.apply_fuzzy_matching(&mapped_text);
+        // 5. 拼音词库替换（精确匹配，带声调）
+        let (replaced_text, pinyin_replacements) = self.apply_pinyin_replacement(&mapped_text);
+
+        // 合并替换记录
+        let mut applied = symbol_replacements;
+        applied.extend(pinyin_replacements);
 
         let elapsed_us = start.elapsed().as_micros() as u64;
+        let changed = replaced_text != text;
 
         NormalizationResult {
-            text: mapped_text.clone(),
-            changed: mapped_text != text,
-            applied: symbol_replacements,
-            suggested,
+            text: replaced_text,
+            changed,
+            applied,
             technical_spans: tech_spans,
             elapsed_us,
         }
@@ -178,11 +181,79 @@ impl TnlEngine {
         result
     }
 
-    /// 应用模糊匹配（目前仅返回建议，不修改文本）
-    fn apply_fuzzy_matching(&self, _text: &str) -> Vec<Replacement> {
-        // TODO: 实现词库模糊匹配建议
-        // 目前返回空，避免误伤
-        Vec::new()
+    /// 应用拼音词库替换
+    ///
+    /// 对连续中文片段尝试精确拼音匹配替换
+    ///
+    /// 约束条件：
+    /// - 拼音 + 声调 100% 完全匹配
+    /// - 原词 ≥2 个汉字
+    /// - 同键冲突时跳过替换
+    fn apply_pinyin_replacement(&self, text: &str) -> (String, Vec<Replacement>) {
+        let Some(matcher) = &self.fuzzy_matcher else {
+            return (text.to_string(), Vec::new());
+        };
+
+        let tokens = Tokenizer::tokenize(text);
+        let mut result = String::with_capacity(text.len());
+        let mut replacements: Vec<Replacement> = Vec::new();
+        let mut last_end = 0;
+
+        for token in tokens {
+            // 添加 token 之前的文本
+            if token.start > last_end {
+                result.push_str(&text[last_end..token.start]);
+            }
+
+            if token.token_type == TokenType::Chinese {
+                // 对中文 token 尝试拼音替换
+                let mut local_idx = 0;
+                while local_idx < token.text.len() {
+                    let remaining = &token.text[local_idx..];
+
+                    if let Some((replace_word, consumed)) =
+                        matcher.try_exact_pinyin_replace(remaining)
+                    {
+                        let end = local_idx + consumed;
+                        let original = &token.text[local_idx..end];
+
+                        result.push_str(&replace_word);
+
+                        // 仅当实际发生替换时记录
+                        if replace_word != original {
+                            replacements.push(Replacement {
+                                original: original.to_string(),
+                                replaced: replace_word,
+                                start: token.start + local_idx,
+                                end: token.start + end,
+                                confidence: 1.0,
+                                reason: ReplacementReason::DictionaryPinyin,
+                            });
+                        }
+
+                        local_idx = end;
+                        continue;
+                    }
+
+                    // 无匹配：复制单个字符
+                    if let Some(ch) = remaining.chars().next() {
+                        result.push(ch);
+                        local_idx += ch.len_utf8();
+                    }
+                }
+            } else {
+                result.push_str(&token.text);
+            }
+
+            last_end = token.end;
+        }
+
+        // 添加剩余文本
+        if last_end < text.len() {
+            result.push_str(&text[last_end..]);
+        }
+
+        (result, replacements)
     }
 }
 
@@ -284,5 +355,63 @@ mod tests {
         // "Look at this" 不应该被转换
         let result2 = engine.normalize("Look at this");
         assert!(!result2.changed || result2.text == "Look at this");
+    }
+
+    // === 拼音词库替换集成测试 ===
+
+    #[test]
+    fn test_normalize_with_pinyin_replacement() {
+        // 使用同音词：事例 (shi4li4) → 示例 (shi4li4)
+        let engine = TnlEngine::new(vec!["示例".to_string()]);
+
+        let result = engine.normalize("今天看了一个事例");
+        assert!(result.changed);
+        assert_eq!(result.text, "今天看了一个示例");
+        assert!(result
+            .applied
+            .iter()
+            .any(|r| matches!(r.reason, ReplacementReason::DictionaryPinyin)));
+    }
+
+    #[test]
+    fn test_normalize_pinyin_tone_strict() {
+        // 声调不同不应替换："妈妈" (ma1ma1) vs "骂骂" (ma4ma4)
+        let engine = TnlEngine::new(vec!["骂骂".to_string()]);
+
+        let result = engine.normalize("妈妈来了");
+        assert!(!result.changed);
+        assert_eq!(result.text, "妈妈来了");
+    }
+
+    #[test]
+    fn test_normalize_pinyin_min_length() {
+        // 单字不替换
+        let engine = TnlEngine::new(vec!["马".to_string()]);
+
+        let result = engine.normalize("一匹麻");
+        // "麻" 是单字，不应被替换
+        assert!(!result.changed || !result.text.contains("马"));
+    }
+
+    #[test]
+    fn test_normalize_pinyin_conflict() {
+        // 同音词冲突：公式 vs 公事 (gong1shi4)
+        let engine = TnlEngine::new(vec!["公式".to_string(), "公事".to_string()]);
+
+        let result = engine.normalize("处理攻势");
+        // 冲突时不替换
+        assert!(!result.changed || result.text == "处理攻势");
+    }
+
+    #[test]
+    fn test_normalize_combined_replacements() {
+        // 同时测试口语符号映射和拼音替换
+        let engine = TnlEngine::new(vec!["示例".to_string()]);
+
+        let result = engine.normalize("查看 readme 点 md 中的事例");
+        assert!(result.changed);
+        // 应该同时包含口语符号替换和拼音替换
+        assert!(result.text.contains("readme.md"));
+        assert!(result.text.contains("示例"));
     }
 }

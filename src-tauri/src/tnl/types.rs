@@ -69,8 +69,6 @@ pub struct NormalizationResult {
     pub changed: bool,
     /// 高置信自动替换记录
     pub applied: Vec<Replacement>,
-    /// 中置信建议（未改原文）
-    pub suggested: Vec<Replacement>,
     /// 识别到的技术片段
     pub technical_spans: Vec<Span>,
     /// 处理耗时（微秒）
@@ -84,7 +82,6 @@ impl NormalizationResult {
             text,
             changed: false,
             applied: Vec::new(),
-            suggested: Vec::new(),
             technical_spans: Vec::new(),
             elapsed_us,
         }
