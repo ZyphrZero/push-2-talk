@@ -2,9 +2,17 @@
 //!
 //! 识别文件名、路径、版本号等技术串
 
+use crate::tnl::is_ascii_digits;
 use crate::tnl::rules::ExtensionWhitelist;
 use crate::tnl::tokenizer::{Token, TokenType};
 use crate::tnl::types::{Span, SpanType};
+
+/// 搜索方向
+#[derive(Copy, Clone, Debug)]
+enum Direction {
+    Forward,
+    Backward,
+}
 
 /// 技术片段识别器
 pub struct TechSpanDetector {
@@ -51,9 +59,9 @@ impl TechSpanDetector {
             }
 
             // 向前查找文件名部分（跳过空白）
-            let prev_idx = self.find_prev_ascii(tokens, i);
+            let prev_idx = self.find_adjacent_ascii(tokens, i, Direction::Backward);
             // 向后查找扩展名部分（跳过空白）
-            let next_idx = self.find_next_ascii(tokens, i);
+            let next_idx = self.find_adjacent_ascii(tokens, i, Direction::Forward);
 
             if let (Some(prev), Some(next)) = (prev_idx, next_idx) {
                 let ext = &tokens[next].text;
@@ -90,12 +98,12 @@ impl TechSpanDetector {
             if is_path_sep {
                 if path_start.is_none() {
                     // 向前扩展到 ASCII token
-                    if let Some(prev) = self.find_prev_ascii(tokens, i) {
+                    if let Some(prev) = self.find_adjacent_ascii(tokens, i, Direction::Backward) {
                         path_start = Some(tokens[prev].start);
                     }
                 }
                 // 向后扩展
-                if let Some(next) = self.find_next_ascii(tokens, i) {
+                if let Some(next) = self.find_adjacent_ascii(tokens, i, Direction::Forward) {
                     last_path_end = Some(tokens[next].end);
                 }
             } else if path_start.is_some()
@@ -214,13 +222,13 @@ impl TechSpanDetector {
 
         // 查找 @ 或 "艾特" 或 "at"
         for (i, token) in tokens.iter().enumerate() {
-            let is_at = token.text == "@" || token.text == "艾特" || token.text.to_lowercase() == "at";
+            let is_at = token.text == "@" || token.text == "艾特" || token.text.eq_ignore_ascii_case("at");
             if !is_at {
                 continue;
             }
 
-            // 向前查找用户名部分（ASCII，跳过空白）
-            let prev_idx = self.find_prev_ascii(tokens, i);
+            // 向前查找用户名部分（扩展到所有连续 ASCII，跳过空白）
+            let prev_idx = self.find_email_username_start(tokens, i);
             // 向后查找域名部分
             let domain_result = self.find_email_domain(tokens, i);
 
@@ -240,6 +248,52 @@ impl TechSpanDetector {
         }
 
         spans
+    }
+
+    /// 查找邮箱用户名的起始位置（向前扩展连续数字段）
+    ///
+    /// 支持 "10455 3588 艾特" 这种多个数字段的口语输入
+    /// 但仅当紧邻 @ 前的 ASCII token 为纯数字时才向前扩展
+    fn find_email_username_start(&self, tokens: &[Token], from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+
+        // 先找到紧邻 @ 前的 ASCII token
+        let first_ascii_idx = self.find_adjacent_ascii(tokens, from, Direction::Backward)?;
+        let first_token = &tokens[first_ascii_idx];
+
+        // 如果不是纯数字，直接返回（不向前扩展）
+        if !is_ascii_digits(&first_token.text) {
+            return Some(first_ascii_idx);
+        }
+
+        // 是纯数字，继续向前扩展到所有连续的纯数字 ASCII token
+        let mut earliest_ascii_idx = first_ascii_idx;
+
+        if first_ascii_idx == 0 {
+            return Some(earliest_ascii_idx);
+        }
+
+        for i in (0..first_ascii_idx).rev() {
+            let t = &tokens[i];
+
+            // 跳过空白
+            if t.token_type == TokenType::Whitespace {
+                continue;
+            }
+
+            // 纯数字 ASCII token，记录并继续向前
+            if t.token_type == TokenType::Ascii && is_ascii_digits(&t.text) {
+                earliest_ascii_idx = i;
+                continue;
+            }
+
+            // 遇到非数字/非空白，停止
+            break;
+        }
+
+        Some(earliest_ascii_idx)
     }
 
     /// 查找邮箱域名部分
@@ -280,35 +334,37 @@ impl TechSpanDetector {
         last_ascii_idx.map(|idx| (idx, has_dot))
     }
 
-    /// 向前查找最近的 ASCII token（跳过空白）
-    fn find_prev_ascii(&self, tokens: &[Token], from: usize) -> Option<usize> {
-        if from == 0 {
-            return None;
+    /// 查找邻近的 ASCII token（跳过空白）
+    fn find_adjacent_ascii(&self, tokens: &[Token], from: usize, direction: Direction) -> Option<usize> {
+        match direction {
+            Direction::Backward => {
+                if from == 0 {
+                    return None;
+                }
+                for i in (0..from).rev() {
+                    if tokens[i].token_type == TokenType::Whitespace {
+                        continue;
+                    }
+                    if tokens[i].token_type == TokenType::Ascii {
+                        return Some(i);
+                    }
+                    break;
+                }
+                None
+            }
+            Direction::Forward => {
+                for i in (from + 1)..tokens.len() {
+                    if tokens[i].token_type == TokenType::Whitespace {
+                        continue;
+                    }
+                    if tokens[i].token_type == TokenType::Ascii {
+                        return Some(i);
+                    }
+                    break;
+                }
+                None
+            }
         }
-        for i in (0..from).rev() {
-            if tokens[i].token_type == TokenType::Whitespace {
-                continue;
-            }
-            if tokens[i].token_type == TokenType::Ascii {
-                return Some(i);
-            }
-            break;
-        }
-        None
-    }
-
-    /// 向后查找最近的 ASCII token（跳过空白）
-    fn find_next_ascii(&self, tokens: &[Token], from: usize) -> Option<usize> {
-        for i in (from + 1)..tokens.len() {
-            if tokens[i].token_type == TokenType::Whitespace {
-                continue;
-            }
-            if tokens[i].token_type == TokenType::Ascii {
-                return Some(i);
-            }
-            break;
-        }
-        None
     }
 
     /// 合并重叠片段
@@ -404,5 +460,61 @@ mod tests {
         let spans2 = detector.detect(text2, &tokens2);
         assert!(!spans2.is_empty());
         assert!(spans2.iter().any(|s| s.span_type == SpanType::Email));
+    }
+
+    #[test]
+    fn test_detect_email_username_boundary() {
+        let detector = TechSpanDetector::default();
+
+        // 全英文句子中的邮箱，用户名不应向前扩展到整个句子
+        let text = "my email is test @ example . com";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        // 应该检测到邮箱
+        assert!(!spans.is_empty());
+        let email_span = spans.iter().find(|s| s.span_type == SpanType::Email).unwrap();
+
+        // 邮箱起点应该是 "test"，不是 "my"
+        assert!(
+            email_span.text.starts_with("test"),
+            "邮箱应该从 'test' 开始，实际: {}",
+            email_span.text
+        );
+    }
+
+    #[test]
+    fn test_detect_email_multi_digit_username() {
+        let detector = TechSpanDetector::default();
+
+        // 多段数字用户名
+        let text = "10455 3588 艾特 qq 点 com";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(!spans.is_empty());
+        let email_span = spans.iter().find(|s| s.span_type == SpanType::Email).unwrap();
+
+        // 强化断言：span 起点应该从 "10455" 开始
+        let expected_start = text.find("10455").unwrap();
+        assert_eq!(
+            email_span.start, expected_start,
+            "邮箱 span 起点应为 {}，实际: {}",
+            expected_start, email_span.start
+        );
+
+        // 强化断言：span 应该覆盖第二段数字 "3588"
+        assert!(
+            email_span.text.contains("3588"),
+            "邮箱应该包含 '3588'，实际: {}",
+            email_span.text
+        );
+
+        // 强化断言：span 应该覆盖到域名结尾
+        assert!(
+            email_span.text.ends_with("com"),
+            "邮箱应该以 'com' 结尾，实际: {}",
+            email_span.text
+        );
     }
 }

@@ -146,10 +146,8 @@ impl FuzzyMatcher {
             }
 
             let distance = levenshtein(text, word);
-            if distance <= threshold {
-                if best_match.is_none() || distance < best_match.as_ref().unwrap().1 {
-                    best_match = Some((word.clone(), distance));
-                }
+            if distance <= threshold && best_match.as_ref().map_or(true, |(_, d)| distance < *d) {
+                best_match = Some((word.clone(), distance));
             }
         }
 

@@ -17,3 +17,11 @@ mod tokenizer;
 mod types;
 
 pub use engine::TnlEngine;
+
+/// 判断字符串是否仅包含 ASCII 数字
+///
+/// 用于邮箱用户名数字段检测、数字间空格合并等场景
+#[inline]
+pub(crate) fn is_ascii_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}

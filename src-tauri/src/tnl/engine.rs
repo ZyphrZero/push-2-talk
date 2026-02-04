@@ -6,10 +6,34 @@ use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::tnl::fuzzy::FuzzyMatcher;
+use crate::tnl::is_ascii_digits;
 use crate::tnl::rules::{ExtensionWhitelist, SpokenSymbolMap};
 use crate::tnl::tech_span::TechSpanDetector;
 use crate::tnl::tokenizer::{Token, TokenType, Tokenizer};
 use crate::tnl::types::{NormalizationResult, Replacement, ReplacementReason, Span};
+
+/// 预计算每个 token 位置的"下一个非空白 token 是否为纯数字"
+///
+/// 复杂度 O(n)，从后向前扫描一次
+fn precompute_next_is_digit(tokens: &[Token]) -> Vec<bool> {
+    let n = tokens.len();
+    let mut result = vec![false; n];
+    let mut next_non_ws_is_digit = false;
+
+    for i in (0..n).rev() {
+        let t = &tokens[i];
+        if t.token_type == TokenType::Whitespace {
+            // 空白 token：继承后面的结果
+            result[i] = next_non_ws_is_digit;
+        } else {
+            // 非空白 token：先记录当前结果，再更新状态
+            result[i] = next_non_ws_is_digit;
+            next_non_ws_is_digit = t.token_type == TokenType::Ascii && is_ascii_digits(&t.text);
+        }
+    }
+
+    result
+}
 
 /// TNL 引擎（可复用，预编译规则）
 pub struct TnlEngine {
@@ -116,7 +140,9 @@ impl TnlEngine {
 
     /// 应用口语符号映射
     ///
-    /// 仅在技术片段内进行映射
+    /// 仅在技术片段内进行映射，同时吞掉符号相邻的空格
+    ///
+    /// 复杂度优化：使用游标线性扫描 O(tokens+spans)，而非每 token 都 find O(tokens×spans)
     fn apply_spoken_symbol_mapping(
         &self,
         text: &str,
@@ -126,21 +152,90 @@ impl TnlEngine {
         let mut result = String::with_capacity(text.len());
         let mut replacements = Vec::new();
         let mut last_end = 0;
+        // 记录当前 tech span 的结束位置，只在 span 内跳过空格
+        let mut skip_next_space_end: Option<usize> = None;
+        // span 游标：利用 spans 已排序且不重叠的特性，线性前进
+        let mut span_idx = 0;
+        // 预计算"下一个非空白 token 是否为纯数字"，O(n) 一次扫描
+        let next_is_digit = precompute_next_is_digit(tokens);
+        // 追踪上一个输出的 token 是否为纯数字（用于数字间空格判断，避免 UTF-8 末字节误判）
+        let mut last_emitted_is_digit = false;
 
-        for token in tokens {
+        for (current_idx, token) in tokens.iter().enumerate() {
             // 添加 token 之前的文本
             if token.start > last_end {
                 result.push_str(&text[last_end..token.start]);
             }
 
-            // 检查是否在技术片段内
-            let in_tech_span = tech_spans
-                .iter()
-                .any(|s| token.start >= s.start && token.end <= s.end);
+            // 游标前进：跳过已经过去的 spans（span.end <= token.start）
+            while span_idx < tech_spans.len() && tech_spans[span_idx].end <= token.start {
+                span_idx += 1;
+            }
+
+            // 判断当前 token 是否在 span 内
+            let current_span_end = if span_idx < tech_spans.len() {
+                let span = &tech_spans[span_idx];
+                if token.start >= span.start && token.end <= span.end {
+                    Some(span.end)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let in_tech_span = current_span_end.is_some();
+
+            // 退出 tech span 时强制复位
+            if !in_tech_span {
+                skip_next_space_end = None;
+            }
+
+            // 如果上一个是口语符号或需要去空格的符号，跳过当前单个空格 token（仅在 tech span 内）
+            if let Some(span_end) = skip_next_space_end {
+                if token.token_type == TokenType::Whitespace
+                    && token.text == " "
+                    && token.end <= span_end
+                {
+                    skip_next_space_end = None;
+                    last_end = token.end;
+                    continue;
+                }
+            }
+            skip_next_space_end = None;
+
+            // tech span 内已有符号去空格（如 `src / lib . rs` → `src/lib.rs`）
+            if in_tech_span && self.spoken_symbol_map.is_trim_symbol(&token.text) {
+                // 吞掉符号前的空格
+                while result.ends_with(' ') {
+                    result.pop();
+                }
+                result.push_str(&token.text);
+                skip_next_space_end = current_span_end;
+                last_end = token.end;
+                last_emitted_is_digit = false; // 符号不是数字
+                continue;
+            }
+
+            // tech span 内连续数字间空格去除（如 `10455 3588` → `104553588`）
+            // 使用 last_emitted_is_digit 状态而非 UTF-8 字节检查，避免多字节字符末字节误判
+            if in_tech_span
+                && token.token_type == TokenType::Whitespace
+                && token.text == " "
+                && last_emitted_is_digit
+                && next_is_digit[current_idx]
+            {
+                last_end = token.end;
+                continue;
+            }
 
             // 尝试映射口语符号
             if in_tech_span && token.token_type == TokenType::Chinese {
                 if let Some(symbol) = self.spoken_symbol_map.try_map(&token.text) {
+                    // 吞掉符号前的空格（如果有）
+                    while result.ends_with(' ') {
+                        result.pop();
+                    }
+
                     result.push(symbol);
                     replacements.push(Replacement {
                         original: token.text.clone(),
@@ -151,12 +246,17 @@ impl TnlEngine {
                         reason: ReplacementReason::SpokenSymbol,
                     });
                     last_end = token.end;
+                    skip_next_space_end = current_span_end; // 标记跳过下一个空格
+                    last_emitted_is_digit = false; // 映射后的符号不是数字
                     continue;
                 }
             }
 
             result.push_str(&token.text);
             last_end = token.end;
+            // 更新 last_emitted_is_digit 状态
+            last_emitted_is_digit =
+                token.token_type == TokenType::Ascii && is_ascii_digits(&token.text);
         }
 
         // 添加剩余文本
@@ -164,21 +264,7 @@ impl TnlEngine {
             result.push_str(&text[last_end..]);
         }
 
-        // 后处理：移除符号前后的空格（仅限技术片段内）
-        let cleaned = self.clean_spaces_around_symbols(&result, tech_spans);
-
-        (cleaned, replacements)
-    }
-
-    /// 清理符号前后的空格（仅在技术片段内）
-    fn clean_spaces_around_symbols(&self, text: &str, _tech_spans: &[Span]) -> String {
-        // 简化实现：移除 . - / _ : @ 前后的空格
-        let mut result = text.to_string();
-        for symbol in ['.', '-', '/', '_', ':', '@'] {
-            result = result.replace(&format!(" {}", symbol), &symbol.to_string());
-            result = result.replace(&format!("{} ", symbol), &symbol.to_string());
-        }
-        result
+        (result, replacements)
     }
 
     /// 应用拼音词库替换
@@ -282,7 +368,7 @@ mod tests {
 
         let result = engine.normalize("src 斜杠 lib 点 rs");
         assert!(result.changed);
-        assert!(result.text.contains('/') || result.text.contains('.'));
+        assert_eq!(result.text, "src/lib.rs");
     }
 
     #[test]
@@ -301,7 +387,8 @@ mod tests {
 
         let result = engine.normalize("一点都不好");
         // "一点都不好" 中的"点"不在技术片段内，不应转换
-        assert!(!result.changed || result.text == "一点都不好");
+        assert!(!result.changed);
+        assert_eq!(result.text, "一点都不好");
     }
 
     #[test]
@@ -350,11 +437,13 @@ mod tests {
 
         // "I AM At the school" 不应该被转换
         let result = engine.normalize("I AM At the school");
-        assert!(!result.changed || result.text == "I AM At the school");
+        assert!(!result.changed);
+        assert_eq!(result.text, "I AM At the school");
 
         // "Look at this" 不应该被转换
         let result2 = engine.normalize("Look at this");
-        assert!(!result2.changed || result2.text == "Look at this");
+        assert!(!result2.changed);
+        assert_eq!(result2.text, "Look at this");
     }
 
     // === 拼音词库替换集成测试 ===
@@ -400,7 +489,8 @@ mod tests {
 
         let result = engine.normalize("处理攻势");
         // 冲突时不替换
-        assert!(!result.changed || result.text == "处理攻势");
+        assert!(!result.changed);
+        assert_eq!(result.text, "处理攻势");
     }
 
     #[test]
@@ -413,5 +503,146 @@ mod tests {
         // 应该同时包含口语符号替换和拼音替换
         assert!(result.text.contains("readme.md"));
         assert!(result.text.contains("示例"));
+    }
+
+    // === 空格吞并集成测试（口语符号映射时处理） ===
+
+    #[test]
+    fn test_space_swallowing_basic() {
+        let engine = TnlEngine::default();
+
+        // 空格在口语符号前后被吞掉
+        let result = engine.normalize("readme 点 md");
+        assert_eq!(result.text, "readme.md");
+
+        // 符号两侧空格都被吞掉
+        let result = engine.normalize("src 斜杠 lib 点 rs");
+        assert_eq!(result.text, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_space_swallowing_email() {
+        let engine = TnlEngine::default();
+
+        // 邮箱场景
+        let result = engine.normalize("1045535878 艾特 qq 点 com");
+        assert_eq!(result.text, "1045535878@qq.com");
+    }
+
+    #[test]
+    fn test_space_preserved_outside_tech_span() {
+        let engine = TnlEngine::default();
+
+        // 技术片段外的空格保持不变
+        let result = engine.normalize("hello world");
+        assert_eq!(result.text, "hello world");
+    }
+
+    // === 新增回归测试：tech span 内已有符号去空格 ===
+
+    #[test]
+    fn test_trim_spaces_around_existing_symbols_path() {
+        let engine = TnlEngine::default();
+
+        // 路径中已有的符号周围空格也去除
+        let result = engine.normalize("src / lib . rs");
+        assert!(result.changed);
+        assert_eq!(result.text, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_trim_spaces_around_existing_symbols_email() {
+        let engine = TnlEngine::default();
+
+        // 邮箱中已有的符号周围空格也去除
+        let result = engine.normalize("a @ b . com");
+        assert!(result.changed);
+        assert_eq!(result.text, "a@b.com");
+    }
+
+    #[test]
+    fn test_symbols_outside_tech_span_not_trimmed() {
+        let engine = TnlEngine::default();
+
+        // 技术片段外的符号（没有域名，不是邮箱）不去空格
+        let result = engine.normalize("a @ b");
+        assert!(!result.changed);
+        assert_eq!(result.text, "a @ b");
+    }
+
+    #[test]
+    fn test_trim_spaces_between_digits() {
+        let engine = TnlEngine::default();
+
+        // tech span 内连续数字间空格去除
+        let result = engine.normalize("10455 3588 艾特 qq 点 com");
+        assert!(result.changed);
+        assert_eq!(result.text, "104553588@qq.com");
+    }
+
+    #[test]
+    fn test_digits_outside_tech_span_not_trimmed() {
+        let engine = TnlEngine::default();
+
+        // 技术片段外的数字间空格保持不变
+        let result = engine.normalize("我有 10 个");
+        assert!(!result.changed);
+        assert_eq!(result.text, "我有 10 个");
+    }
+
+    // === UTF-8 末字节误判回归测试 ===
+
+    #[test]
+    fn test_utf8_last_byte_not_misidentified_as_digit() {
+        let engine = TnlEngine::default();
+
+        // 中文字符的 UTF-8 末字节可能落在 0x30-0x39 范围
+        // 例如 "中" = E4 B8 AD，末字节 0xAD 不在数字范围
+        // 但某些字符可能有末字节在数字范围的情况
+        // 这个测试确保不会因为 UTF-8 末字节误判而错误吞并空格
+
+        // "测" 的 UTF-8 是 E6 B5 8B，末字节 0x8B 不是数字
+        // "试" 的 UTF-8 是 E8 AF 95，末字节 0x95 不是数字
+        // 但我们需要确保逻辑正确，不依赖字节检查
+
+        // 在 tech span 内，中文后面的空格不应被当作"数字间空格"吞掉
+        let result = engine.normalize("测试 123 艾特 qq 点 com");
+        assert!(result.changed);
+        // "测试" 后的空格应该保留（因为"测试"不是数字）
+        assert!(result.text.contains("测试 "));
+    }
+
+    #[test]
+    fn test_mixed_chinese_digit_space_handling() {
+        let engine = TnlEngine::default();
+
+        // 混合场景：中文 + 数字 + 空格
+        // 只有数字间的空格才应该被吞掉
+        let result = engine.normalize("用户 10455 3588 艾特 qq 点 com");
+        assert!(result.changed);
+        // "用户" 后的空格应保留，"10455 3588" 间的空格应吞掉
+        assert!(result.text.contains("用户 "));
+        assert_eq!(result.text, "用户 104553588@qq.com");
+    }
+
+    // === 复杂度 O(n) 验证测试 ===
+
+    #[test]
+    fn test_linear_complexity_many_digit_spaces() {
+        let engine = TnlEngine::default();
+
+        // 构造大量数字间空格的输入，验证不会因 O(n²) 而超时
+        // 格式：1 2 3 4 5 ... 艾特 qq 点 com
+        let digits: Vec<&str> = (0..100).map(|i| if i % 10 == 0 { "0" } else { "1" }).collect();
+        let input = format!("{} 艾特 qq 点 com", digits.join(" "));
+
+        let result = engine.normalize(&input);
+        assert!(result.changed);
+        // 应该在合理时间内完成（<10ms）
+        assert!(
+            result.elapsed_us < 10000,
+            "耗时 {}us 超过 10ms，可能存在 O(n²) 复杂度问题",
+            result.elapsed_us
+        );
     }
 }
