@@ -476,6 +476,8 @@ impl HotkeyConfig {
 pub enum AsrProvider {
     Qwen,
     Doubao,
+    #[serde(rename = "doubao_ime")]
+    DoubaoIme,
     #[serde(rename = "siliconflow")]
     SiliconFlow,
 }
@@ -496,6 +498,13 @@ pub struct AsrCredentials {
     pub doubao_app_id: String,
     #[serde(default)]
     pub doubao_access_token: String,
+    // 豆包输入法 ASR 凭据 (自动注册获取)
+    #[serde(default)]
+    pub doubao_ime_device_id: String,
+    #[serde(default)]
+    pub doubao_ime_token: String,
+    #[serde(default)]
+    pub doubao_ime_cdid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

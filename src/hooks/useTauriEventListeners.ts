@@ -111,12 +111,9 @@ export function useTauriEventListeners({
         }))) return;
 
         if (!(await registerListener<TranscriptionResult>("transcription_complete", (result) => {
-          // 判断是否有实际变化（TNL/LLM 处理后文本与原文不同）
-          const hasActualChange = result.original_text && result.original_text !== result.text;
-
           setTranscript(result.text);
-          // 只有当有实际变化时才设置 originalTranscript，否则不显示双栏对比
-          setOriginalTranscript(hasActualChange ? result.original_text : null);
+          // 只要有 original_text 就显示双栏（原始转写 + 润色结果）
+          setOriginalTranscript(result.original_text || null);
           setCurrentMode(result.mode || null);
           setAsrTime(result.asr_time_ms);
           setLlmTime(result.llm_time_ms);
@@ -132,12 +129,13 @@ export function useTauriEventListeners({
           const enableDictionaryEnhancement = enableDictionaryEnhancementRef?.current ?? false;
 
           // presetName 逻辑：
-          // 1. 如果没有实际变化，不显示任何润色标签
-          // 2. 如果有变化且是 assistant 模式，不显示润色标签
-          // 3. 如果有变化且开启了润色，显示预设名称
-          // 4. 如果有变化且开启了词库增强，显示"词库增强"
-          // 5. 如果有变化但都没开启（仅 TNL 处理），显示"智能润色"
-          const presetName = hasActualChange && mode !== "assistant"
+          // 1. 如果没有 original_text（未启用润色），不显示任何润色标签
+          // 2. 如果是 assistant 模式，不显示润色标签
+          // 3. 如果开启了润色，显示预设名称
+          // 4. 如果开启了词库增强，显示"词库增强"
+          // 5. 其他情况（仅 TNL 处理），显示"智能润色"
+          const hasPolishing = !!result.original_text;
+          const presetName = hasPolishing && mode !== "assistant"
             ? enablePostProcess
               ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
               : (enableDictionaryEnhancement ? "词库增强" : "智能润色")
@@ -149,8 +147,8 @@ export function useTauriEventListeners({
             id: nanoid(8),
             timestamp: Date.now(),
             originalText: result.original_text || result.text,
-            // 只有当有实际变化时才设置 polishedText
-            polishedText: hasActualChange ? result.text : null,
+            // 只要有 original_text 就设置 polishedText
+            polishedText: hasPolishing ? result.text : null,
             presetName,
             mode,
             asrTimeMs: result.asr_time_ms,

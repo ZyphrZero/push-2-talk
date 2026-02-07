@@ -633,7 +633,9 @@ mod tests {
 
         // 构造大量数字间空格的输入，验证不会因 O(n²) 而超时
         // 格式：1 2 3 4 5 ... 艾特 qq 点 com
-        let digits: Vec<&str> = (0..100).map(|i| if i % 10 == 0 { "0" } else { "1" }).collect();
+        let digits: Vec<&str> = (0..100)
+            .map(|i| if i % 10 == 0 { "0" } else { "1" })
+            .collect();
         let input = format!("{} 艾特 qq 点 com", digits.join(" "));
 
         let result = engine.normalize(&input);

@@ -48,3 +48,6 @@ tmpclaude-*
 
 # Docs (plans and drafts)
 docs/
+
+# Git worktrees
+.worktrees/

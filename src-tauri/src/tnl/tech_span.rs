@@ -222,7 +222,8 @@ impl TechSpanDetector {
 
         // 查找 @ 或 "艾特" 或 "at"
         for (i, token) in tokens.iter().enumerate() {
-            let is_at = token.text == "@" || token.text == "艾特" || token.text.eq_ignore_ascii_case("at");
+            let is_at =
+                token.text == "@" || token.text == "艾特" || token.text.eq_ignore_ascii_case("at");
             if !is_at {
                 continue;
             }
@@ -335,7 +336,12 @@ impl TechSpanDetector {
     }
 
     /// 查找邻近的 ASCII token（跳过空白）
-    fn find_adjacent_ascii(&self, tokens: &[Token], from: usize, direction: Direction) -> Option<usize> {
+    fn find_adjacent_ascii(
+        &self,
+        tokens: &[Token],
+        from: usize,
+        direction: Direction,
+    ) -> Option<usize> {
         match direction {
             Direction::Backward => {
                 if from == 0 {
@@ -473,7 +479,10 @@ mod tests {
 
         // 应该检测到邮箱
         assert!(!spans.is_empty());
-        let email_span = spans.iter().find(|s| s.span_type == SpanType::Email).unwrap();
+        let email_span = spans
+            .iter()
+            .find(|s| s.span_type == SpanType::Email)
+            .unwrap();
 
         // 邮箱起点应该是 "test"，不是 "my"
         assert!(
@@ -493,7 +502,10 @@ mod tests {
         let spans = detector.detect(text, &tokens);
 
         assert!(!spans.is_empty());
-        let email_span = spans.iter().find(|s| s.span_type == SpanType::Email).unwrap();
+        let email_span = spans
+            .iter()
+            .find(|s| s.span_type == SpanType::Email)
+            .unwrap();
 
         // 强化断言：span 起点应该从 "10455" 开始
         let expected_start = text.find("10455").unwrap();

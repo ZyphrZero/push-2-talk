@@ -68,7 +68,7 @@ impl NormalPipeline {
         );
 
         // 2. TNL 技术规范化（如果启用）
-        let text = {
+        let (text, tnl_changed) = {
             // 从配置加载 TNL 开关
             let tnl_enabled = AppConfig::load()
                 .map(|(c, _)| c.tnl_config.enabled)
@@ -86,9 +86,9 @@ impl NormalPipeline {
                         tnl_result.applied.len()
                     );
                 }
-                tnl_result.text
+                (tnl_result.text, tnl_result.changed)
             } else {
-                asr_text.clone()
+                (asr_text.clone(), false)
             }
         };
 
@@ -130,10 +130,16 @@ impl NormalPipeline {
 
         // 7. 返回结果
         // 历史记录存储 ASR 原文（约束 C14）
+        // 决定是否显示双栏：
+        // - 有 LLM 处理 → 使用 LLM 返回的 original_text
+        // - 无 LLM 处理但 TNL 改变了文本 → 设置原文以便前端显示双栏
+        // - 无 LLM 处理且 TNL 未改变文本 → 不显示双栏（original_text = None）
         let history_original = if original_text.is_some() {
             original_text
-        } else {
+        } else if tnl_changed {
             Some(asr_text)
+        } else {
+            None
         };
 
         Ok(PipelineResult::success(

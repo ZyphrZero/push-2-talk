@@ -10,12 +10,12 @@ use anyhow::Result;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
+use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 use crate::assistant_processor::AssistantProcessor;
-use crate::clipboard_manager::{ClipboardGuard, insert_text_with_context};
+use crate::clipboard_manager::{insert_text_with_context, ClipboardGuard};
 use crate::config::AppConfig;
 use crate::learning::coordinator::start_learning_observation;
 use crate::tnl::TnlEngine;
-use super::types::{PipelineResult, TranscriptionContext, TranscriptionMode};
 
 /// AI 助手模式处理管道
 ///
@@ -55,7 +55,7 @@ impl AssistantPipeline {
         asr_result: Result<String>,
         asr_time_ms: u64,
         context: TranscriptionContext,
-        target_hwnd: Option<isize>,  // 目标窗口句柄（用于焦点恢复）
+        target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果（用户指令）
         let asr_instruction = asr_result?;
@@ -104,7 +104,9 @@ impl AssistantPipeline {
                 "AssistantPipeline: 文本处理模式 (选中文本: {} 字符)",
                 selected_text.len()
             );
-            processor.process_with_context(&user_instruction, selected_text).await?
+            processor
+                .process_with_context(&user_instruction, selected_text)
+                .await?
         } else {
             // 无选中文本：使用问答模式
             tracing::info!("AssistantPipeline: 问答模式");
@@ -145,7 +147,7 @@ impl AssistantPipeline {
         // 9. 返回结果
         Ok(PipelineResult::success(
             result,
-            Some(asr_instruction),  // 历史记录存储 ASR 原文
+            Some(asr_instruction), // 历史记录存储 ASR 原文
             asr_time_ms,
             Some(llm_time_ms),
             TranscriptionMode::Assistant,
@@ -166,7 +168,6 @@ impl AssistantPipeline {
             }
         }
     }
-
 }
 
 impl Default for AssistantPipeline {

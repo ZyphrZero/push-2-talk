@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use crate::config::LlmConfig;
-use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 use crate::dictionary_utils::entries_to_words;
+use crate::openai_client::{ChatOptions, OpenAiClient, OpenAiClientConfig};
 
 /// LLM 文本润色处理器
 ///
@@ -87,7 +87,11 @@ impl LlmPostProcessor {
         let client = OpenAiClient::new(client_config);
         let config_hash = Self::compute_config_hash(&config);
 
-        Self { client, config, config_hash }
+        Self {
+            client,
+            config,
+            config_hash,
+        }
     }
 
     /// 计算配置哈希（用于检测配置是否变化）
@@ -100,7 +104,11 @@ impl LlmPostProcessor {
         resolved.model.hash(&mut hasher);
         config.active_preset_id.hash(&mut hasher);
         // 哈希当前激活的 preset 的 system_prompt
-        if let Some(preset) = config.presets.iter().find(|p| p.id == config.active_preset_id) {
+        if let Some(preset) = config
+            .presets
+            .iter()
+            .find(|p| p.id == config.active_preset_id)
+        {
             preset.system_prompt.hash(&mut hasher);
         }
         hasher.finish()
@@ -174,7 +182,6 @@ impl LlmPostProcessor {
         }
 
         message.push_str("\n</dictionary>\n\n");
-
 
         // 待处理文本
         message.push_str("\n<source_text>\n");

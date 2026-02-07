@@ -56,6 +56,9 @@ function App() {
       sensevoice_api_key: '',
       doubao_app_id: '',
       doubao_access_token: '',
+      doubao_ime_device_id: '',
+      doubao_ime_token: '',
+      doubao_ime_cdid: '',
     },
     selection: {
       active_provider: 'qwen',

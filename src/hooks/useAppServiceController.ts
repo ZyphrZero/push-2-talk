@@ -244,6 +244,10 @@ export function useAppServiceController({
                 sensevoice_api_key: parsedCache.siliconflow?.api_key || '',
                 doubao_app_id: parsedCache.doubao?.app_id || '',
                 doubao_access_token: parsedCache.doubao?.access_token || '',
+                // 豆包输入法 ASR 凭据 (自动注册获取，迁移时留空)
+                doubao_ime_device_id: '',
+                doubao_ime_token: '',
+                doubao_ime_cdid: '',
               },
               selection: {
                 active_provider: activeProvider,
