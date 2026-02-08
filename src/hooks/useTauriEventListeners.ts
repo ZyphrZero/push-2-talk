@@ -133,12 +133,12 @@ export function useTauriEventListeners({
           // 2. 如果是 assistant 模式，不显示润色标签
           // 3. 如果开启了润色，显示预设名称
           // 4. 如果开启了词库增强，显示"词库增强"
-          // 5. 其他情况（仅 TNL 处理），显示"智能润色"
+          // 5. 其他情况（仅 TNL 处理），显示"文本规范化"
           const hasPolishing = !!result.original_text;
           const presetName = hasPolishing && mode !== "assistant"
             ? enablePostProcess
               ? llmConfig?.presets.find((p) => p.id === llmConfig.active_preset_id)?.name || null
-              : (enableDictionaryEnhancement ? "词库增强" : "智能润色")
+              : (enableDictionaryEnhancement ? "词库增强" : "文本规范化")
             : null;
 
           setActivePresetName?.(presetName);

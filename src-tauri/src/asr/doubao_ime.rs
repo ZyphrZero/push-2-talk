@@ -15,6 +15,8 @@ use anyhow::{anyhow, Result};
 #[cfg(feature = "doubao-ime")]
 use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "doubao-ime")]
+use std::future::Future;
+#[cfg(feature = "doubao-ime")]
 use std::time::Duration;
 #[cfg(feature = "doubao-ime")]
 use tokio::sync::mpsc;
@@ -44,6 +46,10 @@ const AID: u32 = 401734;
 /// 转录超时时间（秒）
 #[cfg(feature = "doubao-ime")]
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 15;
+
+/// 注册和 Token 请求超时（秒）
+#[cfg(feature = "doubao-ime")]
+const CREDENTIAL_REQUEST_TIMEOUT_SECS: u64 = 10;
 
 /// User-Agent
 #[cfg(feature = "doubao-ime")]
@@ -480,13 +486,16 @@ mod implementation {
 
         let params = build_register_params(&cdid);
 
-        let response = client
-            .post(REGISTER_URL)
-            .query(&params)
-            .header("User-Agent", USER_AGENT)
-            .json(&body)
-            .send()
-            .await?;
+        let response = with_request_timeout(
+            "register_device",
+            client
+                .post(REGISTER_URL)
+                .query(&params)
+                .header("User-Agent", USER_AGENT)
+                .json(&body)
+                .send(),
+        )
+        .await?;
 
         let response_json: serde_json::Value = response.json().await?;
 
@@ -507,6 +516,38 @@ mod implementation {
             clientudid,
             token: String::new(),
         })
+    }
+
+    async fn with_request_timeout<T, F>(
+        request_name: &'static str,
+        request_future: F,
+    ) -> Result<T>
+    where
+        F: Future<Output = std::result::Result<T, reqwest::Error>>,
+    {
+        timeout(
+            Duration::from_secs(CREDENTIAL_REQUEST_TIMEOUT_SECS),
+            request_future,
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "{} timed out after {}s",
+                request_name,
+                CREDENTIAL_REQUEST_TIMEOUT_SECS
+            )
+        })?
+        .map_err(anyhow::Error::from)
+    }
+
+    fn finalize_unexpected_ws_close_result(final_text: &str) -> Result<String> {
+        if final_text.trim().is_empty() {
+            Err(anyhow!(
+                "WebSocket closed unexpectedly before final result, and final text is empty"
+            ))
+        } else {
+            Ok(final_text.to_string())
+        }
     }
 
     pub async fn get_asr_token(
@@ -531,14 +572,17 @@ mod implementation {
         let body_str = "body=null";
         let x_ss_stub = format!("{:X}", md5::compute(body_str.as_bytes()));
 
-        let response = client
-            .post(SETTINGS_URL)
-            .query(&params)
-            .header("User-Agent", USER_AGENT)
-            .header("x-ss-stub", x_ss_stub)
-            .body(body_str)
-            .send()
-            .await?;
+        let response = with_request_timeout(
+            "get_asr_token",
+            client
+                .post(SETTINGS_URL)
+                .query(&params)
+                .header("User-Agent", USER_AGENT)
+                .header("x-ss-stub", x_ss_stub)
+                .body(body_str)
+                .send(),
+        )
+        .await?;
 
         let response_json: serde_json::Value = response.json().await?;
 
@@ -1022,7 +1066,9 @@ mod implementation {
                         }
                         None => {
                             // WebSocket 关闭但未收到 SessionFinished，仍发送已累积的结果
-                            let _ = result_tx.send(Ok(final_text.clone())).await;
+                            let _ = result_tx
+                                .send(finalize_unexpected_ws_close_result(&final_text))
+                                .await;
                             return Ok(());
                         }
                     }
@@ -1326,7 +1372,11 @@ mod implementation {
 
     #[cfg(test)]
     mod tests {
-        use super::extract_text_candidate_from_result_json;
+        use super::{
+            extract_text_candidate_from_result_json, finalize_unexpected_ws_close_result,
+            with_request_timeout, CREDENTIAL_REQUEST_TIMEOUT_SECS,
+        };
+        use tokio::time::{sleep, Duration};
 
         #[test]
         fn extract_uses_latest_interim_when_no_final_signal() {
@@ -1356,6 +1406,45 @@ mod implementation {
                 extract_text_candidate_from_result_json(result_json).expect("should extract");
             assert_eq!(extracted.0, "你好呀");
             assert!(extracted.1);
+        }
+
+        #[test]
+        fn unexpected_ws_close_requires_non_empty_text() {
+            let err = finalize_unexpected_ws_close_result("")
+                .expect_err("empty final text should be treated as error");
+            assert!(
+                err.to_string().contains("empty"),
+                "error should explain that final text is empty"
+            );
+
+            let ok = finalize_unexpected_ws_close_result("hello")
+                .expect("non-empty final text should be returned");
+            assert_eq!(ok, "hello");
+        }
+
+        #[tokio::test]
+        async fn request_timeout_fails_for_slow_response() {
+            let result = with_request_timeout("timeout-test", async {
+                sleep(Duration::from_millis(
+                    (CREDENTIAL_REQUEST_TIMEOUT_SECS * 1000) + 50,
+                ))
+                .await;
+                Ok::<_, reqwest::Error>(())
+            })
+            .await;
+
+            assert!(result.is_err(), "slow request should time out");
+        }
+
+        #[tokio::test]
+        async fn request_timeout_allows_fast_response() {
+            let result = with_request_timeout("fast-test", async {
+                Ok::<_, reqwest::Error>("ok")
+            })
+            .await
+            .expect("fast request should succeed");
+
+            assert_eq!(result, "ok");
         }
     }
 }

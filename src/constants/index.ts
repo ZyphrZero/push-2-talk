@@ -143,6 +143,7 @@ export const DEFAULT_ASR_CACHE = {
   active_provider: 'qwen' as AsrProvider,
   qwen: { api_key: '' },
   doubao: { app_id: '', access_token: '' },
+  doubao_ime: { device_id: '', token: '', cdid: '' },
   siliconflow: { api_key: '' }
 };
 

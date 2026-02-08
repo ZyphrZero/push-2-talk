@@ -575,24 +575,60 @@ async fn handle_doubao_ime_realtime_start(
             }
         }
 
-        match realtime_client.start_session().await {
+        let mut session_result = realtime_client.start_session().await;
+        if session_result.is_err() && had_credentials {
+            if let Some(err_text) = session_result.as_ref().err().map(|e| e.to_string()) {
+                let normalized = err_text.to_lowercase();
+                let should_refresh_credentials = normalized.contains("taskfailed")
+                    || normalized.contains("sessionfailed")
+                    || normalized.contains("token")
+                    || normalized.contains("auth")
+                    || normalized.contains("401")
+                    || normalized.contains("403");
+
+                if should_refresh_credentials {
+                    tracing::warn!(
+                        "豆包输入法 ASR: 现有凭据可能失效，清除后重试。原始错误: {}",
+                        err_text
+                    );
+                    *doubao_ime_credentials.lock().unwrap() = None;
+                    if let Err(e) = clear_doubao_ime_credentials_from_config().await {
+                        tracing::error!("清除豆包输入法配置凭据失败: {}", e);
+                    }
+
+                    realtime_client = DoubaoImeRealtimeClient::new(
+                        reqwest::Client::new(),
+                        asr::DoubaoImeClientConfig::default(),
+                    );
+                    session_result = realtime_client.start_session().await;
+                }
+            }
+        }
+
+        match session_result {
             Ok(session) => {
                 tracing::info!("豆包输入法 WebSocket 连接已建立");
 
-                // 如果之前没有凭据，现在需要保存新注册的凭据
-                if !had_credentials {
-                    if let Some(new_creds) = realtime_client.credentials() {
+                if let Some(new_creds) = realtime_client.credentials() {
+                    let should_save = !had_credentials
+                        || doubao_ime_credentials
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|old| {
+                                old.device_id != new_creds.device_id
+                                    || old.token != new_creds.token
+                                    || old.cdid != new_creds.cdid
+                            })
+                            .unwrap_or(true);
+
+                    if should_save {
                         tracing::info!(
-                            "豆包输入法 ASR: 保存新注册的凭据 (device_id={})",
+                            "豆包输入法 ASR: 更新凭据缓存 (device_id={})",
                             new_creds.device_id
                         );
-                        // 保存到 AppState
                         *doubao_ime_credentials.lock().unwrap() = Some(new_creds.clone());
-
-                        // 保存到配置文件
-                        if let Err(e) =
-                            save_doubao_ime_credentials_to_config(new_creds.clone()).await
-                        {
+                        if let Err(e) = save_doubao_ime_credentials_to_config(new_creds.clone()).await {
                             tracing::error!("保存豆包输入法凭据到配置文件失败: {}", e);
                         }
                     }
@@ -650,6 +686,21 @@ async fn save_doubao_ime_credentials_to_config(creds: DoubaoImeCredentials) -> a
 
     config.save()?;
     tracing::info!("豆包输入法凭据已保存到配置文件");
+    Ok(())
+}
+
+async fn clear_doubao_ime_credentials_from_config() -> anyhow::Result<()> {
+    use config::CONFIG_LOCK;
+
+    let _guard = CONFIG_LOCK.lock().unwrap();
+    let (mut config, _) = config::AppConfig::load()?;
+
+    config.asr_config.credentials.doubao_ime_device_id.clear();
+    config.asr_config.credentials.doubao_ime_token.clear();
+    config.asr_config.credentials.doubao_ime_cdid.clear();
+
+    config.save()?;
+    tracing::info!("已清除豆包输入法凭据缓存");
     Ok(())
 }
 

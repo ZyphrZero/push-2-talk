@@ -63,7 +63,6 @@ crossbeam-channel = "0.5"
 # 注意：需要安装 CMake 才能编译 Opus
 # Windows: choco install cmake
 # 或从 https://cmake.org/download/ 下载安装
-prost = "0.13"
 opus = { version = "0.3", optional = true }
 
 # 开机自启动
