@@ -28,8 +28,10 @@ pub enum ReplacementReason {
     DictionaryExact,
     /// 词库模糊匹配（编辑距离）
     DictionaryFuzzy,
-    /// 词库拼音匹配
+    /// 词库拼音匹配（中文）
     DictionaryPinyin,
+    /// 词库音标匹配（英文）
+    DictionaryPhonetic,
 }
 
 /// 技术片段

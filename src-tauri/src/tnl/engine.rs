@@ -96,11 +96,15 @@ impl TnlEngine {
             self.apply_spoken_symbol_mapping(&normalized, &tokens, &tech_spans);
 
         // 5. 拼音词库替换（精确匹配，带声调）
-        let (replaced_text, pinyin_replacements) = self.apply_pinyin_replacement(&mapped_text);
+        let (pinyin_text, pinyin_replacements) = self.apply_pinyin_replacement(&mapped_text);
+
+        // 6. 音标词库替换（英文复合词匹配）
+        let (replaced_text, phonetic_replacements) = self.apply_phonetic_replacement(&pinyin_text);
 
         // 合并替换记录
         let mut applied = symbol_replacements;
         applied.extend(pinyin_replacements);
+        applied.extend(phonetic_replacements);
 
         let elapsed_us = start.elapsed().as_micros() as u64;
         let changed = replaced_text != text;
@@ -337,6 +341,116 @@ impl TnlEngine {
         // 添加剩余文本
         if last_end < text.len() {
             result.push_str(&text[last_end..]);
+        }
+
+        (result, replacements)
+    }
+
+    /// 应用音标词库替换
+    ///
+    /// 对连续英文单词尝试音标匹配替换（复合词匹配）
+    ///
+    /// 例如：open cloud → OpenClaude
+    ///
+    /// 使用最长匹配策略：从最长前缀开始尝试匹配
+    fn apply_phonetic_replacement(&self, text: &str) -> (String, Vec<Replacement>) {
+        let Some(matcher) = &self.fuzzy_matcher else {
+            return (text.to_string(), Vec::new());
+        };
+
+        let tokens = Tokenizer::tokenize(text);
+        let mut result = String::with_capacity(text.len());
+        let mut replacements: Vec<Replacement> = Vec::new();
+        let mut i = 0;
+
+        while i < tokens.len() {
+            let token = &tokens[i];
+
+            // 检查是否是英文单词的开始
+            let is_english_word = token.token_type == TokenType::Ascii
+                && token.text.len() >= 2
+                && token.text.chars().all(|c| c.is_ascii_alphabetic());
+
+            if !is_english_word {
+                result.push_str(&token.text);
+                i += 1;
+                continue;
+            }
+
+            // 收集从当前位置开始的连续英文单词序列
+            // 格式: [英文, 空格?, 英文, 空格?, ...]
+            let mut english_run: Vec<(usize, &Token)> = vec![(i, token)];
+            let mut j = i + 1;
+
+            while j < tokens.len() {
+                let next = &tokens[j];
+
+                // 跳过空格
+                if next.token_type == TokenType::Whitespace {
+                    j += 1;
+                    // 检查空格后是否还有英文单词
+                    if j < tokens.len() {
+                        let after_space = &tokens[j];
+                        let is_eng = after_space.token_type == TokenType::Ascii
+                            && after_space.text.len() >= 2
+                            && after_space.text.chars().all(|c| c.is_ascii_alphabetic());
+                        if is_eng {
+                            english_run.push((j, after_space));
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                } else {
+                    break;
+                }
+            }
+
+            // 尝试从最长到最短的前缀进行匹配（含单词级音标匹配）
+            let mut matched = false;
+
+            if !english_run.is_empty() {
+                for len in (1..=english_run.len()).rev() {
+                    let subset: Vec<&str> = english_run[..len]
+                        .iter()
+                        .map(|(_, t)| t.text.as_str())
+                        .collect();
+
+                    if let Some(fuzzy_match) = matcher.try_phonetic_match_tokens(&subset) {
+                        // 匹配成功
+                        let first_idx = english_run[0].0;
+                        let last_idx = english_run[len - 1].0;
+                        let first_token = &tokens[first_idx];
+                        let last_token = &tokens[last_idx];
+                        let original = &text[first_token.start..last_token.end];
+
+                        result.push_str(&fuzzy_match.word);
+                        replacements.push(Replacement {
+                            original: original.to_string(),
+                            replaced: fuzzy_match.word,
+                            start: first_token.start,
+                            end: last_token.end,
+                            confidence: fuzzy_match.confidence,
+                            reason: ReplacementReason::DictionaryPhonetic,
+                        });
+
+                        // 跳过已匹配的 token（包括中间的空格）
+                        i = last_idx + 1;
+                        // 如果下一个是空格，也跳过
+                        if i < tokens.len() && tokens[i].token_type == TokenType::Whitespace {
+                            // 不跳过，让下次循环处理
+                        }
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+
+            if !matched {
+                // 无匹配：输出当前 token
+                result.push_str(&token.text);
+                i += 1;
+            }
         }
 
         (result, replacements)
@@ -646,5 +760,78 @@ mod tests {
             "耗时 {}us 超过 10ms，可能存在 O(n²) 复杂度问题",
             result.elapsed_us
         );
+    }
+
+    // === 音标词库替换集成测试 ===
+
+    #[test]
+    fn test_normalize_phonetic_compound_word() {
+        // "open cloud" → "OpenClaude"
+        let engine = TnlEngine::new(vec!["OpenClaude".to_string()]);
+
+        let result = engine.normalize("使用 open cloud 进行开发");
+        assert!(result.changed);
+        assert!(result.text.contains("OpenClaude"));
+        assert!(result
+            .applied
+            .iter()
+            .any(|r| matches!(r.reason, ReplacementReason::DictionaryPhonetic)));
+    }
+
+    #[test]
+    fn test_normalize_phonetic_clawed() {
+        // "open clawed" → "OpenClaude"
+        let engine = TnlEngine::new(vec!["OpenClaude".to_string()]);
+
+        let result = engine.normalize("open clawed is great");
+        assert!(result.changed);
+        assert!(result.text.contains("OpenClaude"));
+    }
+
+    #[test]
+    fn test_normalize_phonetic_no_match_claw() {
+        // "open claw" ≠ "OpenClaude" (claw 编码为 KL，Claude 编码为 KLT)
+        let engine = TnlEngine::new(vec!["OpenClaude".to_string()]);
+
+        let result = engine.normalize("open claw");
+        // claw 音标不匹配，不应替换
+        assert!(!result.text.contains("OpenClaude"));
+    }
+
+    #[test]
+    fn test_normalize_phonetic_single_word() {
+        // "cloud" → "Claude"（单词级音标匹配）
+        let engine = TnlEngine::new(vec!["Claude".to_string()]);
+
+        let result = engine.normalize("I like cloud computing");
+        assert!(result.changed);
+        assert!(result.text.contains("Claude"));
+        assert!(result
+            .applied
+            .iter()
+            .any(|r| matches!(r.reason, ReplacementReason::DictionaryPhonetic)));
+    }
+
+    #[test]
+    fn test_normalize_phonetic_single_word_chinese_context() {
+        // 中文语境中的单词音标匹配：ASR 把 "Claude" 识别成 "cloud"
+        let engine = TnlEngine::new(vec!["Claude".to_string()]);
+
+        let result = engine.normalize("嗯，我最近学习了他们的那个标准产品 cloud");
+        assert!(result.changed);
+        assert!(result.text.contains("Claude"));
+        assert!(!result.text.contains("cloud"));
+    }
+
+    #[test]
+    fn test_normalize_phonetic_combined_with_symbol() {
+        // 同时测试口语符号映射和音标替换
+        let engine = TnlEngine::new(vec!["OpenClaude".to_string()]);
+
+        let result = engine.normalize("open cloud 点 ai");
+        assert!(result.changed);
+        // 应该同时包含音标替换和口语符号替换
+        assert!(result.text.contains("OpenClaude"));
+        // 注意：.ai 可能不会被识别为技术片段，取决于 tech_span_detector
     }
 }
