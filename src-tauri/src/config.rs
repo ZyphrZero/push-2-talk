@@ -776,6 +776,16 @@ impl SharedLlmConfig {
             _ => self.default_model.clone().unwrap_or_else(default_llm_model),
         }
     }
+
+    /// 获取指定功能的专用模型（不 fallback 到默认模型）
+    pub fn get_feature_model_option(&self, feature: &str) -> Option<String> {
+        match feature {
+            "polishing" => self.polishing_model.clone(),
+            "assistant" => self.assistant_model.clone(),
+            "learning" => self.learning_model.clone(),
+            _ => None,
+        }
+    }
 }
 
 fn default_use_shared_llm() -> bool {
@@ -873,16 +883,15 @@ impl LlmFeatureConfig {
             // 查找 Provider
             if let Some(provider) = shared.get_provider(provider_id) {
                 // 确定使用哪个模型
-                let model = self
-                    .model
-                    .clone()
-                    .or_else(|| match feature {
-                        "polishing" => shared.polishing_model.clone(),
-                        "assistant" => shared.assistant_model.clone(),
-                        "learning" => shared.learning_model.clone(),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| provider.default_model.clone());
+                // Provider Registry 模式下不使用 self.model（该字段仅用于独立模式）
+                // 优先级：shared 的功能专用模型 > provider.default_model
+                let model = match feature {
+                    "polishing" => shared.polishing_model.clone(),
+                    "assistant" => shared.assistant_model.clone(),
+                    "learning" => shared.learning_model.clone(),
+                    _ => None,
+                }
+                .unwrap_or_else(|| provider.default_model.clone());
 
                 return ResolvedLlmClientConfig {
                     endpoint: normalize_chat_completions_endpoint(&provider.endpoint),
@@ -893,10 +902,8 @@ impl LlmFeatureConfig {
 
             // Provider 不存在，尝试使用第一个 Provider (降级策略)
             if let Some(first_provider) = shared.providers.first() {
-                let model = self
-                    .model
-                    .clone()
-                    .or_else(|| shared.get_feature_model(feature).into())
+                let model = shared
+                    .get_feature_model_option(feature)
                     .unwrap_or_else(|| first_provider.default_model.clone());
 
                 return ResolvedLlmClientConfig {
@@ -1597,13 +1604,15 @@ impl AppConfig {
                             config.llm_config.shared.assistant_model = Some(assistant_model);
                         }
 
-                        // 清空 Feature 的独立配置
+                        // 清空 Feature 的独立配置（包括 model，因为已迁移到 Provider.default_model 或 shared.*_model）
                         config.llm_config.feature_override.use_shared = true;
                         config.llm_config.feature_override.endpoint = None;
                         config.llm_config.feature_override.api_key = None;
+                        config.llm_config.feature_override.model = None;
                         config.assistant_config.llm.use_shared = true;
                         config.assistant_config.llm.endpoint = None;
                         config.assistant_config.llm.api_key = None;
+                        config.assistant_config.llm.model = None;
                     } else {
                         // 配置不同，创建 2 个 Provider
                         tracing::info!("语音润色和 AI 助手使用不同配置，创建两个 Provider");
@@ -1632,17 +1641,48 @@ impl AppConfig {
                         config.llm_config.shared.polishing_provider_id = Some(polishing_id.clone());
                         config.llm_config.shared.assistant_provider_id = Some(assistant_id.clone());
 
-                        // 清空 Feature 的独立配置
+                        // 清空 Feature 的独立配置（包括 model，因为已迁移到 Provider.default_model）
                         config.llm_config.feature_override.use_shared = true;
                         config.llm_config.feature_override.endpoint = None;
                         config.llm_config.feature_override.api_key = None;
+                        config.llm_config.feature_override.model = None;
                         config.assistant_config.llm.use_shared = true;
                         config.assistant_config.llm.endpoint = None;
                         config.assistant_config.llm.api_key = None;
+                        config.assistant_config.llm.model = None;
                     }
 
                     // 标记迁移完成（不在此处保存，由调用者决定）
                     tracing::info!("Provider 迁移完成");
+                    migrated = true;
+                }
+            }
+
+            // 迁移 8: 清理 Provider Registry 模式下遗留的 feature model 覆盖
+            // 迁移 7 遗漏了清理 model 字段，导致旧的 model 值覆盖 provider.default_model
+            if !config.llm_config.shared.providers.is_empty() {
+                let mut cleaned = false;
+                if config.llm_config.feature_override.use_shared
+                    && config.llm_config.feature_override.model.is_some()
+                {
+                    tracing::info!(
+                        "清理 feature_override 遗留的 model 值: {:?}",
+                        config.llm_config.feature_override.model
+                    );
+                    config.llm_config.feature_override.model = None;
+                    cleaned = true;
+                }
+                if config.assistant_config.llm.use_shared
+                    && config.assistant_config.llm.model.is_some()
+                {
+                    tracing::info!(
+                        "清理 assistant_config.llm 遗留的 model 值: {:?}",
+                        config.assistant_config.llm.model
+                    );
+                    config.assistant_config.llm.model = None;
+                    cleaned = true;
+                }
+                if cleaned {
                     migrated = true;
                 }
             }
