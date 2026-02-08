@@ -12,6 +12,102 @@ use crate::tnl::tech_span::TechSpanDetector;
 use crate::tnl::tokenizer::{Token, TokenType, Tokenizer};
 use crate::tnl::types::{NormalizationResult, Replacement, ReplacementReason, Span};
 
+/// 合并连续的空格分隔单字母为大写缩写
+///
+/// 规则：
+/// - 检测 ≥2 个连续的、被空格分隔的单英文字母
+/// - 合并为大写缩写（如 "T N L" → "TNL"，"U S B" → "USB"）
+/// - 前后不能是字母（避免误匹配多字母单词的一部分）
+///
+/// 安全性：
+/// - "I am here" → 不变（"I" 后面是多字母词 "am"）
+/// - "LongCat Flash" → 不变（都是多字母词）
+/// - "A I model" → "AI model"（连续两个单字母）
+fn merge_spaced_letters(text: &str) -> (String, Vec<Replacement>) {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+
+    // 至少需要 "X Y"（3个字符）才可能有2个字母+空格
+    if n < 3 {
+        return (text.to_string(), Vec::new());
+    }
+
+    // 预计算每个字符位置的字节偏移
+    let mut byte_offsets: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut offset = 0;
+    for &ch in &chars {
+        byte_offsets.push(offset);
+        offset += ch.len_utf8();
+    }
+    byte_offsets.push(offset);
+
+    let mut result = String::with_capacity(text.len());
+    let mut replacements = Vec::new();
+    let mut i = 0;
+
+    while i < n {
+        let ch = chars[i];
+
+        // 检查是否是一个独立的单英文字母
+        let prev_is_letter = i > 0 && chars[i - 1].is_ascii_alphabetic();
+        let next_is_letter = i + 1 < n && chars[i + 1].is_ascii_alphabetic();
+
+        if ch.is_ascii_alphabetic() && !prev_is_letter && !next_is_letter {
+            // 找到一个单字母，尝试收集连续序列
+            let seq_start = i;
+            let mut letters = vec![ch];
+            let mut end = i + 1; // 已确认消费的字符位置（不含）
+            let mut j = i + 1;
+
+            loop {
+                // 跳过空格
+                let space_start = j;
+                while j < n && chars[j] == ' ' {
+                    j += 1;
+                }
+                if j == space_start || j >= n {
+                    break;
+                }
+
+                // 检查是否为单字母
+                let next_after = j + 1 < n && chars[j + 1].is_ascii_alphabetic();
+                let at_end = j + 1 >= n;
+                if chars[j].is_ascii_alphabetic() && (at_end || !next_after) {
+                    letters.push(chars[j]);
+                    end = j + 1;
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if letters.len() >= 2 {
+                let merged: String =
+                    letters.iter().map(|c| c.to_ascii_uppercase()).collect();
+                let original: String = chars[seq_start..end].iter().collect();
+
+                replacements.push(Replacement {
+                    original,
+                    replaced: merged.clone(),
+                    start: byte_offsets[seq_start],
+                    end: byte_offsets[end],
+                    confidence: 1.0,
+                    reason: ReplacementReason::LetterMerge,
+                });
+
+                result.push_str(&merged);
+                i = end;
+                continue;
+            }
+        }
+
+        result.push(ch);
+        i += 1;
+    }
+
+    (result, replacements)
+}
+
 /// 预计算每个 token 位置的"下一个非空白 token 是否为纯数字"
 ///
 /// 复杂度 O(n)，从后向前扫描一次
@@ -85,6 +181,9 @@ impl TnlEngine {
         // 1. Unicode 归一化 (NFC) + 空白折叠
         let normalized = self.unicode_normalize(text);
 
+        // 1.5. 合并连续的空格分隔单字母（如 "T N L" → "TNL"）
+        let (normalized, letter_merge_replacements) = merge_spaced_letters(&normalized);
+
         // 2. 分词
         let tokens = Tokenizer::tokenize(&normalized);
 
@@ -102,7 +201,8 @@ impl TnlEngine {
         let (replaced_text, phonetic_replacements) = self.apply_phonetic_replacement(&pinyin_text);
 
         // 合并替换记录
-        let mut applied = symbol_replacements;
+        let mut applied = letter_merge_replacements;
+        applied.extend(symbol_replacements);
         applied.extend(pinyin_replacements);
         applied.extend(phonetic_replacements);
 
@@ -833,5 +933,121 @@ mod tests {
         // 应该同时包含音标替换和口语符号替换
         assert!(result.text.contains("OpenClaude"));
         // 注意：.ai 可能不会被识别为技术片段，取决于 tech_span_detector
+    }
+
+    // === 连续单字母合并测试 ===
+
+    #[test]
+    fn test_merge_letters_basic() {
+        let engine = TnlEngine::default();
+
+        // 基本合并：3个字母
+        let result = engine.normalize("T N L");
+        assert!(result.changed);
+        assert_eq!(result.text, "TNL");
+        assert!(result
+            .applied
+            .iter()
+            .any(|r| matches!(r.reason, ReplacementReason::LetterMerge)));
+    }
+
+    #[test]
+    fn test_merge_letters_two() {
+        let engine = TnlEngine::default();
+
+        // 最少2个字母即合并
+        let result = engine.normalize("A I");
+        assert!(result.changed);
+        assert_eq!(result.text, "AI");
+    }
+
+    #[test]
+    fn test_merge_letters_usb() {
+        let engine = TnlEngine::default();
+
+        let result = engine.normalize("U S B");
+        assert!(result.changed);
+        assert_eq!(result.text, "USB");
+    }
+
+    #[test]
+    fn test_merge_letters_lowercase() {
+        let engine = TnlEngine::default();
+
+        // 小写字母也合并，结果统一大写
+        let result = engine.normalize("t n l");
+        assert!(result.changed);
+        assert_eq!(result.text, "TNL");
+    }
+
+    #[test]
+    fn test_merge_letters_in_chinese_context() {
+        let engine = TnlEngine::default();
+
+        // 中文语境中的字母合并
+        let result = engine.normalize("我说了 T N L 三个字母");
+        assert!(result.changed);
+        assert!(result.text.contains("TNL"));
+        assert_eq!(result.text, "我说了 TNL 三个字母");
+    }
+
+    #[test]
+    fn test_merge_letters_no_merge_single() {
+        let engine = TnlEngine::default();
+
+        // 单个字母不合并
+        let result = engine.normalize("I am here");
+        assert!(!result.changed);
+        assert_eq!(result.text, "I am here");
+    }
+
+    #[test]
+    fn test_merge_letters_no_merge_multiword() {
+        let engine = TnlEngine::default();
+
+        // 多字母单词不受影响
+        let result = engine.normalize("LongCat Flash Lite");
+        assert!(!result.changed);
+        assert_eq!(result.text, "LongCat Flash Lite");
+    }
+
+    #[test]
+    fn test_merge_letters_mixed_single_and_multi() {
+        let engine = TnlEngine::default();
+
+        // 混合场景：单字母后跟多字母单词
+        let result = engine.normalize("A I model");
+        assert!(result.changed);
+        assert_eq!(result.text, "AI model");
+    }
+
+    #[test]
+    fn test_merge_letters_with_phonetic_dict() {
+        // 合并后的缩写可以被音标匹配命中
+        let engine = TnlEngine::new(vec!["TNL".to_string()]);
+
+        let result = engine.normalize("这是 T N L 层");
+        assert!(result.changed);
+        assert!(result.text.contains("TNL"));
+    }
+
+    #[test]
+    fn test_merge_letters_vip() {
+        let engine = TnlEngine::default();
+
+        let result = engine.normalize("他是 V I P 用户");
+        assert!(result.changed);
+        assert_eq!(result.text, "他是 VIP 用户");
+    }
+
+    #[test]
+    fn test_merge_letters_number_breaks_sequence() {
+        let engine = TnlEngine::default();
+
+        // 数字打断字母序列
+        let result = engine.normalize("A 2 B");
+        // A 后面是数字 "2"，不是单字母，不合并
+        assert!(!result.changed);
+        assert_eq!(result.text, "A 2 B");
     }
 }

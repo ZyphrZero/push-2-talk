@@ -32,6 +32,8 @@ pub enum ReplacementReason {
     DictionaryPinyin,
     /// 词库音标匹配（英文）
     DictionaryPhonetic,
+    /// 连续单字母合并（如 "T N L" → "TNL"）
+    LetterMerge,
 }
 
 /// 技术片段
