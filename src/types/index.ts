@@ -27,6 +27,7 @@ export interface DualHotkeyConfig {
 
 // ASR 配置
 export type AsrProvider = 'qwen' | 'doubao' | 'doubao_ime' | 'siliconflow';
+export type AsrLanguageMode = 'zh' | 'auto';
 
 export interface AsrCredentials {
   qwen_api_key: string;
@@ -48,6 +49,7 @@ export interface AsrSelection {
 export interface AsrConfig {
   credentials: AsrCredentials;
   selection: AsrSelection;
+  language_mode: AsrLanguageMode;
 }
 
 // LLM 配置

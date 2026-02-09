@@ -254,6 +254,7 @@ export function useAppServiceController({
                 enable_fallback: false,
                 fallback_provider: null,
               },
+              language_mode: parsedCache.language_mode === 'zh' ? 'zh' : 'auto',
             };
 
             let localDictionary: string[] = [];
@@ -307,7 +308,10 @@ export function useAppServiceController({
       setFallbackApiKey(config.siliconflow_api_key || "");
 
       if (config.asr_config) {
-        setAsrConfig(config.asr_config);
+        setAsrConfig({
+          ...config.asr_config,
+          language_mode: config.asr_config.language_mode === 'zh' ? 'zh' : 'auto',
+        });
       }
 
       setUseRealtime(config.use_realtime_asr ?? false);

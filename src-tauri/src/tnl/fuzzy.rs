@@ -11,6 +11,46 @@ use strsim::levenshtein;
 /// 音标匹配最低置信度阈值
 const MIN_CONFIDENCE: f32 = 0.65;
 
+/// 歧义抑制 margin：top1 和 top2 分差小于此值时不替换
+const MARGIN_THRESHOLD: f32 = 0.10;
+
+/// 根据输入词长度计算动态置信度阈值
+fn dynamic_min_confidence(word_len: usize) -> f32 {
+    match word_len {
+        0..=4 => 0.75,
+        5..=7 => MIN_CONFIDENCE,
+        _ => 0.60,
+    }
+}
+
+/// 判断是否为"技术 token"
+///
+/// 技术 token：以字母开头，可包含字母、数字、连字符和下划线。
+/// 例如：k8s、gpt-4o、x86_64、vue3、TypeScript
+pub fn is_tech_token(s: &str) -> bool {
+    if s.len() < 2 {
+        return false;
+    }
+
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 从技术 token 中提取字母部分用于音标编码
+///
+/// 例如：k8s → "ks"，gpt-4o → "gpto"，x86_64 → "x"
+pub fn extract_alpha_parts(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphabetic()).collect()
+}
+
 /// 模糊匹配器
 pub struct FuzzyMatcher {
     /// 词库（已提纯）
@@ -125,9 +165,20 @@ impl FuzzyMatcher {
                 phonetic_index.entry(alternate_key).or_default().push(i);
             }
 
-            // 对纯英文单词建立单词级索引（支持 primary + alternate）
-            if word.chars().all(|c| c.is_ascii_alphabetic()) && word.len() >= 2 {
-                let codes = Self::get_phonetic_codes(&dm_encoder, word);
+            // 对纯英文/技术单词建立单词级索引（支持 primary + alternate）
+            let is_pure_alpha = word.chars().all(|c| c.is_ascii_alphabetic()) && word.len() >= 2;
+            let is_tech = is_tech_token(word);
+            if is_pure_alpha || is_tech {
+                let index_word = if is_tech {
+                    extract_alpha_parts(word)
+                } else {
+                    word.to_string()
+                };
+                if index_word.len() < 2 {
+                    continue;
+                }
+
+                let codes = Self::get_phonetic_codes(&dm_encoder, &index_word);
                 for code in codes {
                     single_word_phonetic_index.entry(code).or_default().push(i);
                 }
@@ -167,7 +218,11 @@ impl FuzzyMatcher {
                 }
                 c if c.is_ascii_uppercase() => {
                     // 大写字母：可能是驼峰边界
-                    if !current.is_empty() && current.chars().last().map_or(false, |p| p.is_ascii_lowercase())
+                    if !current.is_empty()
+                        && current
+                            .chars()
+                            .last()
+                            .map_or(false, |p| p.is_ascii_lowercase())
                     {
                         // 前一个是小写，当前是大写 → 驼峰边界
                         parts.push(current.clone());
@@ -188,7 +243,9 @@ impl FuzzyMatcher {
         // 过滤掉非纯英文部分和过短部分
         parts
             .into_iter()
-            .filter(|p| p.len() >= 2 && p.chars().all(|c| c.is_ascii_alphabetic()))
+            .filter(|p| {
+                (p.len() >= 2 && p.chars().all(|c| c.is_ascii_alphabetic())) || is_tech_token(p)
+            })
             .collect()
     }
 
@@ -216,7 +273,12 @@ impl FuzzyMatcher {
     ) -> String {
         let mut codes = Vec::with_capacity(parts.len());
         for part in parts {
-            let dm = encoder.double_metaphone(part);
+            let alpha = extract_alpha_parts(part);
+            if alpha.len() < 2 {
+                return String::new();
+            }
+
+            let dm = encoder.double_metaphone(&alpha);
             let mut code = if use_alternate {
                 dm.alternate()
             } else {
@@ -235,10 +297,19 @@ impl FuzzyMatcher {
     }
 
     /// 按模式计算查询键
-    fn compute_query_key(encoder: &DoubleMetaphone, tokens: &[&str], use_alternate: bool) -> String {
+    fn compute_query_key(
+        encoder: &DoubleMetaphone,
+        tokens: &[&str],
+        use_alternate: bool,
+    ) -> String {
         let mut codes = Vec::with_capacity(tokens.len());
         for token in tokens {
-            let dm = encoder.double_metaphone(token);
+            let alpha = extract_alpha_parts(token);
+            if alpha.len() < 2 {
+                return String::new();
+            }
+
+            let dm = encoder.double_metaphone(&alpha);
             let mut code = if use_alternate {
                 dm.alternate()
             } else {
@@ -340,10 +411,12 @@ impl FuzzyMatcher {
             return None;
         }
 
-        // 过滤非纯英文 token
+        // 过滤非纯英文/技术 token
         let valid_tokens: Vec<&str> = tokens
             .iter()
-            .filter(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()))
+            .filter(|t| {
+                (t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic())) || is_tech_token(t)
+            })
             .copied()
             .collect();
 
@@ -385,7 +458,9 @@ impl FuzzyMatcher {
             0.85
         };
 
-        let mut best: Option<(usize, f32)> = None;
+        let min_confidence = dynamic_min_confidence(input.chars().count());
+        let mut top1: Option<(usize, f32)> = None;
+        let mut top2_score: Option<f32> = None;
         for &idx in &candidate_indices {
             let word = &self.dictionary[idx];
             // 跳过精确同词
@@ -394,16 +469,41 @@ impl FuzzyMatcher {
             }
 
             let score = Self::calculate_candidate_score(&input, word, base_confidence);
-            if score >= MIN_CONFIDENCE && best.as_ref().map_or(true, |(_, s)| score > *s) {
-                best = Some((idx, score));
+            if score < min_confidence {
+                continue;
+            }
+
+            match top1 {
+                None => {
+                    top1 = Some((idx, score));
+                }
+                Some((_, s1)) if score > s1 => {
+                    top2_score = Some(s1);
+                    top1 = Some((idx, score));
+                }
+                Some((_, _)) => {
+                    if top2_score.map_or(true, |s2| score > s2) {
+                        top2_score = Some(score);
+                    }
+                }
             }
         }
 
-        best.map(|(idx, score)| FuzzyMatch {
-            word: self.dictionary[idx].clone(),
-            confidence: score,
-            match_type: FuzzyMatchType::Phonetic,
-        })
+        if let Some((idx, score)) = top1 {
+            if let Some(s2) = top2_score {
+                if score - s2 < MARGIN_THRESHOLD {
+                    return None;
+                }
+            }
+
+            return Some(FuzzyMatch {
+                word: self.dictionary[idx].clone(),
+                confidence: score,
+                match_type: FuzzyMatchType::Phonetic,
+            });
+        }
+
+        None
     }
 
     /// 精确匹配
@@ -502,13 +602,24 @@ impl FuzzyMatcher {
     ///
     /// 使用预计算索引，支持 primary + alternate 查询和评分择优
     fn try_phonetic_match(&self, text: &str) -> Option<FuzzyMatch> {
-        // 仅对纯英文单词生效
-        if text.len() < 2 || !text.chars().all(|c| c.is_ascii_alphabetic()) {
+        // 仅对纯英文/技术单词生效
+        let is_pure_alpha = text.len() >= 2 && text.chars().all(|c| c.is_ascii_alphabetic());
+        let is_tech = is_tech_token(text);
+        if !is_pure_alpha && !is_tech {
+            return None;
+        }
+
+        let phonetic_input = if is_tech {
+            extract_alpha_parts(text)
+        } else {
+            text.to_string()
+        };
+        if phonetic_input.len() < 2 {
             return None;
         }
 
         // 获取查询的所有音标编码
-        let query_codes = Self::get_phonetic_codes(&self.dm_encoder, text);
+        let query_codes = Self::get_phonetic_codes(&self.dm_encoder, &phonetic_input);
         if query_codes.is_empty() {
             return None;
         }
@@ -538,7 +649,9 @@ impl FuzzyMatcher {
             0.85
         };
 
-        let mut best: Option<(usize, f32)> = None;
+        let min_confidence = dynamic_min_confidence(text.chars().count());
+        let mut top1: Option<(usize, f32)> = None;
+        let mut top2_score: Option<f32> = None;
         for &idx in &candidate_indices {
             let word = &self.dictionary[idx];
             // 跳过精确同词
@@ -547,16 +660,41 @@ impl FuzzyMatcher {
             }
 
             let score = Self::calculate_candidate_score(text, word, base_confidence);
-            if score >= MIN_CONFIDENCE && best.as_ref().map_or(true, |(_, s)| score > *s) {
-                best = Some((idx, score));
+            if score < min_confidence {
+                continue;
+            }
+
+            match top1 {
+                None => {
+                    top1 = Some((idx, score));
+                }
+                Some((_, s1)) if score > s1 => {
+                    top2_score = Some(s1);
+                    top1 = Some((idx, score));
+                }
+                Some((_, _)) => {
+                    if top2_score.map_or(true, |s2| score > s2) {
+                        top2_score = Some(score);
+                    }
+                }
             }
         }
 
-        best.map(|(idx, score)| FuzzyMatch {
-            word: self.dictionary[idx].clone(),
-            confidence: score,
-            match_type: FuzzyMatchType::Phonetic,
-        })
+        if let Some((idx, score)) = top1 {
+            if let Some(s2) = top2_score {
+                if score - s2 < MARGIN_THRESHOLD {
+                    return None;
+                }
+            }
+
+            return Some(FuzzyMatch {
+                word: self.dictionary[idx].clone(),
+                confidence: score,
+                match_type: FuzzyMatchType::Phonetic,
+            });
+        }
+
+        None
     }
 
     /// 转换为拼音字符串（全拼，无声调）
@@ -878,6 +1016,36 @@ mod tests {
     }
 
     #[test]
+    fn test_is_tech_token() {
+        assert!(is_tech_token("k8s"));
+        assert!(is_tech_token("gpt4"));
+        assert!(is_tech_token("gpt-4o"));
+        assert!(is_tech_token("x86_64"));
+        assert!(is_tech_token("TypeScript"));
+        assert!(!is_tech_token("8k"));
+        assert!(!is_tech_token("a"));
+    }
+
+    #[test]
+    fn test_extract_alpha_parts() {
+        assert_eq!(extract_alpha_parts("k8s"), "ks");
+        assert_eq!(extract_alpha_parts("gpt-4o"), "gpto");
+        assert_eq!(extract_alpha_parts("x86_64"), "x");
+        assert_eq!(extract_alpha_parts("TypeScript"), "TypeScript");
+    }
+
+    #[test]
+    fn test_phonetic_match_tech_token_gpt4_to_gpt4o() {
+        let matcher = FuzzyMatcher::new(vec!["gpt4o".to_string()]);
+
+        let result = matcher.try_phonetic_match_tokens(&["gpt4"]);
+        assert!(result.is_some());
+        let m = result.unwrap();
+        assert_eq!(m.word, "gpt4o");
+        assert_eq!(m.match_type, FuzzyMatchType::Phonetic);
+    }
+
+    #[test]
     fn test_phonetic_tarry_tauri() {
         // tarry → Tauri (都编码为 TR)
         let matcher = FuzzyMatcher::new(vec!["Tauri".to_string()]);
@@ -921,6 +1089,45 @@ mod tests {
         let result = matcher.try_phonetic_match_tokens(&["open", "cloud"]);
         assert!(result.is_some());
         assert_eq!(result.unwrap().word, "OpenClaude");
+    }
+
+    #[test]
+    fn test_margin_suppression() {
+        let matcher = FuzzyMatcher::new(vec!["Claude".to_string(), "Clawed".to_string()]);
+
+        let score_claude = FuzzyMatcher::calculate_candidate_score("cloud", "Claude", 0.85);
+        let score_clawed = FuzzyMatcher::calculate_candidate_score("cloud", "Clawed", 0.85);
+        assert!((score_claude - score_clawed).abs() < MARGIN_THRESHOLD);
+
+        let result = matcher.try_phonetic_match("cloud");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_dynamic_threshold_short_word() {
+        let matcher = FuzzyMatcher::new(vec!["Claude".to_string()]);
+        let input = "clad";
+        let score = FuzzyMatcher::calculate_candidate_score(input, "Claude", 0.9);
+
+        assert!(score >= MIN_CONFIDENCE);
+        assert!(score < dynamic_min_confidence(input.chars().count()));
+
+        let result = matcher.try_phonetic_match(input);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_dynamic_threshold_long_word() {
+        let matcher = FuzzyMatcher::new(vec!["Claude".to_string()]);
+        let input = "clouuuud";
+        let score = FuzzyMatcher::calculate_candidate_score(input, "Claude", 0.9);
+
+        assert!(score < MIN_CONFIDENCE);
+        assert!(score >= dynamic_min_confidence(input.chars().count()));
+
+        let result = matcher.try_phonetic_match(input);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().word, "Claude");
     }
 
     #[test]

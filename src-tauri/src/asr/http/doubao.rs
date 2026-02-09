@@ -1,4 +1,5 @@
 use crate::asr::utils;
+use crate::config::AsrLanguageMode;
 use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -6,21 +7,43 @@ use base64::{engine::general_purpose, Engine as _};
 const DOUBAO_API_URL: &str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 const RESOURCE_ID: &str = "volc.bigasr.auc_turbo";
 
+fn build_context_data(language_mode: AsrLanguageMode) -> serde_json::Value {
+    match language_mode {
+        AsrLanguageMode::Auto => serde_json::json!([
+            {"text": "当前场景为技术听写，中英文混合"},
+            {"text": "保留英文专有名词和技术术语，如 Kubernetes, GPT-4o, Claude"},
+            {"text": "保留语气词，去除尾部句号"},
+        ]),
+        AsrLanguageMode::Zh => serde_json::json!([
+            {"text": "你好，请问有什么可以帮您的"},
+            {"text": "豆包语音识别真的不错呀"},
+            {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
+        ]),
+    }
+}
+
 #[derive(Clone)]
 pub struct DoubaoASRClient {
     app_id: String,
     access_key: String,
     client: reqwest::Client,
     dictionary: Vec<String>,
+    language_mode: AsrLanguageMode,
 }
 
 impl DoubaoASRClient {
-    pub fn new(app_id: String, access_key: String, dictionary: Vec<String>) -> Self {
+    pub fn new(
+        app_id: String,
+        access_key: String,
+        dictionary: Vec<String>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
         Self {
             app_id,
             access_key,
             client: utils::create_http_client(),
             dictionary,
+            language_mode,
         }
     }
 
@@ -40,7 +63,13 @@ impl DoubaoASRClient {
                 .iter()
                 .map(|w| serde_json::json!({"word": w}))
                 .collect();
-            let context = serde_json::json!({"hotwords": hotwords}).to_string();
+            let context_data = build_context_data(self.language_mode);
+            let context = serde_json::json!({
+                "context_type": "dialog_ctx",
+                "context_data": context_data,
+                "hotwords": hotwords,
+            })
+            .to_string();
             tracing::info!(
                 "豆包 HTTP ASR 词库: {} 个词（已提纯）, context={}",
                 purified_words.len(),
@@ -48,8 +77,14 @@ impl DoubaoASRClient {
             );
             Some(serde_json::json!({"context": context}))
         } else {
+            let context_data = build_context_data(self.language_mode);
+            let context = serde_json::json!({
+                "context_type": "dialog_ctx",
+                "context_data": context_data,
+            })
+            .to_string();
             tracing::info!("豆包 HTTP ASR 词库: 未配置");
-            None
+            Some(serde_json::json!({"context": context}))
         };
 
         let mut request_obj = serde_json::json!({"model_name": "bigmodel"});
@@ -121,5 +156,37 @@ impl DoubaoASRClient {
         utils::strip_trailing_punctuation(&mut text);
         tracing::info!("豆包 ASR 转录完成: {}", text);
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_context_data;
+    use crate::config::AsrLanguageMode;
+
+    #[test]
+    fn build_context_data_uses_mixed_prompt_for_auto() {
+        let context_data = build_context_data(AsrLanguageMode::Auto);
+        let joined = context_data
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("中英文混合"));
+    }
+
+    #[test]
+    fn build_context_data_uses_chat_prompt_for_zh() {
+        let context_data = build_context_data(AsrLanguageMode::Zh);
+        let joined = context_data
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("日常聊天"));
     }
 }

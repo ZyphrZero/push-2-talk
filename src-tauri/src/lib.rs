@@ -246,6 +246,7 @@ async fn save_config(
                     None
                 },
             },
+            language_mode: config::AsrLanguageMode::Auto,
         }),
         use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
         enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
@@ -320,6 +321,7 @@ async fn handle_recording_start(
     doubao_access_token: Option<String>,
     audio_mute_manager: Arc<Mutex<Option<AudioMuteManager>>>,
     dictionary: Vec<String>,
+    language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("检测到快捷键按下");
 
@@ -366,6 +368,7 @@ async fn handle_recording_start(
                     doubao_app_id,
                     doubao_access_token,
                     dictionary,
+                    language_mode,
                 )
                 .await;
             }
@@ -388,6 +391,7 @@ async fn handle_recording_start(
                     audio_sender_handle,
                     api_key,
                     dictionary,
+                    language_mode,
                 )
                 .await;
             }
@@ -418,6 +422,7 @@ async fn handle_doubao_realtime_start(
     doubao_app_id: Option<String>,
     doubao_access_token: Option<String>,
     dictionary: Vec<String>,
+    language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("启动豆包实时流式转录...");
 
@@ -446,8 +451,12 @@ async fn handle_doubao_realtime_start(
         if let (Some(app_id), Some(access_token)) =
             (doubao_app_id.as_ref(), doubao_access_token.as_ref())
         {
-            let realtime_client =
-                DoubaoRealtimeClient::new(app_id.clone(), access_token.clone(), dictionary);
+            let realtime_client = DoubaoRealtimeClient::new(
+                app_id.clone(),
+                access_token.clone(),
+                dictionary,
+                language_mode,
+            );
             // 清理旧的会话和任务（防止资源泄漏）
             {
                 let mut session_guard = doubao_session.lock().await;
@@ -628,7 +637,9 @@ async fn handle_doubao_ime_realtime_start(
                             new_creds.device_id
                         );
                         *doubao_ime_credentials.lock().unwrap() = Some(new_creds.clone());
-                        if let Err(e) = save_doubao_ime_credentials_to_config(new_creds.clone()).await {
+                        if let Err(e) =
+                            save_doubao_ime_credentials_to_config(new_creds.clone()).await
+                        {
                             tracing::error!("保存豆包输入法凭据到配置文件失败: {}", e);
                         }
                     }
@@ -712,6 +723,7 @@ async fn handle_qwen_realtime_start(
     audio_sender_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     api_key: String,
     dictionary: Vec<String>,
+    language_mode: config::AsrLanguageMode,
 ) {
     tracing::info!("启动千问实时流式转录...");
 
@@ -730,7 +742,7 @@ async fn handle_qwen_realtime_start(
         }
     }
 
-    let realtime_client = QwenRealtimeClient::new(api_key, dictionary);
+    let realtime_client = QwenRealtimeClient::new(api_key, dictionary, language_mode);
     match realtime_client.start_session().await {
         Ok(session) => {
             tracing::info!("千问 WebSocket 连接已建立");
@@ -919,6 +931,7 @@ async fn start_app(
                 *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
                     cfg.credentials.qwen_api_key.clone(),
                     dict.clone(),
+                    cfg.language_mode,
                 ));
             }
             if !cfg.credentials.sensevoice_api_key.is_empty() {
@@ -933,6 +946,7 @@ async fn start_app(
                     cfg.credentials.doubao_app_id.clone(),
                     cfg.credentials.doubao_access_token.clone(),
                     dict.clone(),
+                    cfg.language_mode,
                 ));
             }
 
@@ -943,7 +957,11 @@ async fn start_app(
             // 旧逻辑回退（基本不会走到这里）
             if !api_key.is_empty() {
                 *state.qwen_client.lock().unwrap() =
-                    Some(QwenASRClient::new(api_key.clone(), dict.clone()));
+                    Some(QwenASRClient::new(
+                        api_key.clone(),
+                        dict.clone(),
+                        config::AsrLanguageMode::Auto,
+                    ));
             }
             if !fallback_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() =
@@ -1120,6 +1138,10 @@ async fn start_app(
     let api_key_start = asr_api_key.clone();
     let doubao_app_id_start = doubao_app_id;
     let doubao_access_token_start = doubao_access_token;
+    let asr_language_mode_start = asr_config
+        .as_ref()
+        .map(|cfg| cfg.language_mode)
+        .unwrap_or(config::AsrLanguageMode::Auto);
 
     let app_handle_stop = app_handle.clone();
     let audio_recorder_stop = Arc::clone(&state.audio_recorder);
@@ -1214,6 +1236,7 @@ async fn start_app(
         let api_key = api_key_start.clone();
         let doubao_app_id = doubao_app_id_start.clone();
         let doubao_access_token = doubao_access_token_start.clone();
+        let language_mode = asr_language_mode_start;
         let is_recording_locked_spawn = Arc::clone(&is_recording_locked_start);
         let audio_mute_manager = Arc::clone(&audio_mute_manager_start);
         let dictionary_state = Arc::clone(&dictionary_state_start);
@@ -1243,6 +1266,7 @@ async fn start_app(
                 doubao_access_token,
                 audio_mute_manager,
                 dictionary,
+                language_mode,
             )
             .await;
 
@@ -1648,6 +1672,11 @@ async fn handle_assistant_mode(
 
     // 3. 使用 AssistantPipeline 处理
     let processor = { assistant_processor.lock().unwrap().clone() };
+    let dictionary = {
+        let state = app.state::<AppState>();
+        let dict = state.dictionary.lock().unwrap().clone();
+        dict
+    };
     let pipeline = AssistantPipeline::new();
 
     let context = TranscriptionContext {
@@ -1664,6 +1693,7 @@ async fn handle_assistant_mode(
             asr_time_ms,
             context,
             target_hwnd,
+            dictionary,
         )
         .await;
 

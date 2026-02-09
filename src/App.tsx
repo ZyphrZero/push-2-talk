@@ -65,6 +65,7 @@ function App() {
       enable_fallback: false,
       fallback_provider: null,
     },
+    language_mode: 'auto',
   });
 
   const [useRealtime, setUseRealtime] = useState(false);

@@ -43,6 +43,7 @@ impl AssistantPipeline {
     /// * `asr_time_ms` - ASR 耗时（毫秒）
     /// * `context` - 上下文信息（包含选中文本）
     /// * `target_hwnd` - 目标窗口句柄（用于焦点恢复）
+    /// * `dictionary` - 当前词库（用于 TNL 技术词规范化）
     ///
     /// # Returns
     /// * `Ok(PipelineResult)` - 处理成功
@@ -56,6 +57,7 @@ impl AssistantPipeline {
         asr_time_ms: u64,
         context: TranscriptionContext,
         target_hwnd: Option<isize>, // 目标窗口句柄（用于焦点恢复）
+        dictionary: Vec<String>,
     ) -> Result<PipelineResult> {
         // 1. 解包 ASR 结果（用户指令）
         let asr_instruction = asr_result?;
@@ -72,7 +74,7 @@ impl AssistantPipeline {
                 .unwrap_or(true);
 
             if tnl_enabled {
-                let engine = TnlEngine::new_without_dictionary();
+                let engine = Self::build_tnl_engine(dictionary);
                 let tnl_result = engine.normalize(&asr_instruction);
                 if tnl_result.changed {
                     tracing::info!(
@@ -155,6 +157,10 @@ impl AssistantPipeline {
         ))
     }
 
+    fn build_tnl_engine(dictionary: Vec<String>) -> TnlEngine {
+        TnlEngine::new(dictionary)
+    }
+
     /// 插入文本到当前光标位置
     fn insert_result(text: &str, has_selection: bool, guard: Option<ClipboardGuard>) -> bool {
         match insert_text_with_context(text, has_selection, guard) {
@@ -184,5 +190,23 @@ mod tests {
     fn test_pipeline_creation() {
         let _pipeline = AssistantPipeline::new();
         // Pipeline 是无状态的，只需要能创建即可
+    }
+
+    #[test]
+    fn test_build_tnl_engine_with_empty_dictionary_keeps_phonetic_word() {
+        let engine = AssistantPipeline::build_tnl_engine(Vec::new());
+        let result = engine.normalize("嗯，我最近学习了他们的那个标准产品 cloud");
+
+        assert!(result.text.contains("cloud"));
+        assert!(!result.text.contains("Claude"));
+    }
+
+    #[test]
+    fn test_build_tnl_engine_with_dictionary_applies_phonetic_replacement() {
+        let engine = AssistantPipeline::build_tnl_engine(vec!["Claude".to_string()]);
+        let result = engine.normalize("嗯，我最近学习了他们的那个标准产品 cloud");
+
+        assert!(result.text.contains("Claude"));
+        assert!(!result.text.contains("cloud"));
     }
 }

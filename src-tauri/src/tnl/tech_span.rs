@@ -42,8 +42,23 @@ impl TechSpanDetector {
         // 策略 4: 检测邮箱模式 (xxx@xxx.xxx 或 xxx艾特xxx点xxx)
         spans.extend(self.detect_emails(text, tokens));
 
+        // 策略 5: 检测 URL/域名 (https://..., www..., github 点 com)
+        spans.extend(self.detect_urls(text, tokens));
+
+        // 策略 6: 检测 CLI flag (--verbose, -p)
+        spans.extend(self.detect_cli_flags(text, tokens));
+
+        // 策略 7: 检测驼峰/帕斯卡标识符
+        spans.extend(self.detect_identifiers(text, tokens));
+
+        // 策略 8: 检测十六进制/颜色码 (0xDEAD, #FF5733)
+        spans.extend(self.detect_hex_values(text, tokens));
+
+        // 策略 9: 检测包名/模块名 (@vue/cli, @types/node)
+        spans.extend(self.detect_packages(text, tokens));
+
         // 去重并合并重叠片段
-        self.merge_overlapping(spans)
+        self.merge_overlapping(text, spans)
     }
 
     /// 检测文件名模式
@@ -251,6 +266,283 @@ impl TechSpanDetector {
         spans
     }
 
+    /// 检测 URL/域名模式
+    fn detect_urls(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        // 场景 1：协议开头（http:// 或 https://）
+        for (i, token) in tokens.iter().enumerate() {
+            if token.token_type != TokenType::Ascii {
+                continue;
+            }
+            if !token.text.eq_ignore_ascii_case("http") && !token.text.eq_ignore_ascii_case("https")
+            {
+                continue;
+            }
+
+            let Some(domain_start_idx) = self.find_ascii_after_scheme(tokens, i) else {
+                continue;
+            };
+
+            if let Some(domain_end_idx) = self.find_domain_end(tokens, domain_start_idx) {
+                let start = token.start;
+                let end = tokens[domain_end_idx].end;
+                spans.push(Span {
+                    text: text[start..end].to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::Url,
+                });
+            }
+        }
+
+        // 场景 2：域名/口语域名（www.example.com / github 点 com）
+        for (i, token) in tokens.iter().enumerate() {
+            if token.token_type != TokenType::Ascii {
+                continue;
+            }
+
+            // 避免与邮箱域名冲突（example.com in test@example.com）
+            if self.is_after_email_at(tokens, i) {
+                continue;
+            }
+
+            if let Some(domain_end_idx) = self.find_domain_end(tokens, i) {
+                let start = token.start;
+                let end = tokens[domain_end_idx].end;
+                spans.push(Span {
+                    text: text[start..end].to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::Url,
+                });
+            }
+        }
+
+        spans
+    }
+
+    /// 检测 CLI flag（--verbose / -p）
+    fn detect_cli_flags(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        for (i, token) in tokens.iter().enumerate() {
+            // 形式 A："--" + "verbose"（例如 "--verbose"）
+            if token.text == "--" {
+                let Some(flag_idx) = self.find_next_non_whitespace(tokens, i) else {
+                    continue;
+                };
+                let flag_token = &tokens[flag_idx];
+                if flag_token.token_type == TokenType::Ascii
+                    && flag_token.text.len() >= 2
+                    && flag_token
+                        .text
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                {
+                    let start = token.start;
+                    let end = flag_token.end;
+                    spans.push(Span {
+                        text: text[start..end].to_string(),
+                        start,
+                        end,
+                        span_type: SpanType::CliFlag,
+                    });
+                }
+                continue;
+            }
+
+            if token.text != "-" {
+                continue;
+            }
+
+            let Some(next_idx) = self.find_next_non_whitespace(tokens, i) else {
+                continue;
+            };
+
+            // 形式 B："-" + "-" + "verbose"（含可选空格）
+            if tokens[next_idx].text == "-" {
+                let Some(flag_idx) = self.find_next_non_whitespace(tokens, next_idx) else {
+                    continue;
+                };
+
+                let flag_token = &tokens[flag_idx];
+                if flag_token.token_type == TokenType::Ascii
+                    && flag_token.text.len() >= 2
+                    && flag_token
+                        .text
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                {
+                    let start = token.start;
+                    let end = flag_token.end;
+                    spans.push(Span {
+                        text: text[start..end].to_string(),
+                        start,
+                        end,
+                        span_type: SpanType::CliFlag,
+                    });
+                }
+                continue;
+            }
+
+            // 形式 C："-" + "p"
+            let flag_token = &tokens[next_idx];
+            if flag_token.token_type == TokenType::Ascii
+                && flag_token.text.len() == 1
+                && flag_token.text.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                let start = token.start;
+                let end = flag_token.end;
+                spans.push(Span {
+                    text: text[start..end].to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::CliFlag,
+                });
+            }
+        }
+
+        spans
+    }
+
+    /// 检测十六进制值和颜色哈希
+    ///
+    /// 模式：
+    /// - 0x 前缀：0x + 2~16 位十六进制字符（0xDEAD, 0xFF）
+    /// - # 前缀：# + 恰好 3/4/6/8 位十六进制字符（#FF5733, #FFF）
+    fn detect_hex_values(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        for (i, token) in tokens.iter().enumerate() {
+            // 场景 1：0x 前缀（整个 token 就是一个 Ascii token，如 0xDEADBEEF）
+            if token.token_type == TokenType::Ascii {
+                let t = &token.text;
+                if (t.starts_with("0x") || t.starts_with("0X")) && t.len() >= 4 {
+                    // 0x 后面至少 2 位，最多 16 位
+                    let hex_part = &t[2..];
+                    if hex_part.len() >= 2
+                        && hex_part.len() <= 16
+                        && hex_part.chars().all(|c| c.is_ascii_hexdigit())
+                    {
+                        spans.push(Span {
+                            text: text[token.start..token.end].to_string(),
+                            start: token.start,
+                            end: token.end,
+                            span_type: SpanType::Technical,
+                        });
+                    }
+                }
+            }
+
+            // 场景 2：# 前缀颜色码
+            if token.text != "#" {
+                continue;
+            }
+
+            // 向后找紧邻的 Ascii token（跳过空白）
+            let Some(next_idx) = self.find_adjacent_ascii(tokens, i, Direction::Forward) else {
+                continue;
+            };
+
+            let hex_token = &tokens[next_idx];
+            let hex_text = &hex_token.text;
+
+            // 检查是否全部为十六进制字符，且长度为 3/4/6/8
+            let valid_len = matches!(hex_text.len(), 3 | 4 | 6 | 8);
+            if valid_len && hex_text.chars().all(|c| c.is_ascii_hexdigit()) {
+                let start = token.start;
+                let end = hex_token.end;
+                spans.push(Span {
+                    text: text[start..end].to_string(),
+                    start,
+                    end,
+                    span_type: SpanType::Technical,
+                });
+            }
+        }
+
+        spans
+    }
+
+    /// 检测包名/模块名
+    ///
+    /// 模式：
+    /// - @scope/name: 符号@ + ASCII + 符号/ + ASCII（如 @vue/cli, @types/node）
+    ///   区分邮箱：包名的 @ 前面没有紧邻的 ASCII token
+    fn detect_packages(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        for (i, token) in tokens.iter().enumerate() {
+            if token.text != "@" {
+                continue;
+            }
+
+            // 区分邮箱：如果 @ 前面紧邻 ASCII token，则是邮箱，跳过
+            let has_prev_ascii = if i > 0 {
+                self.find_adjacent_ascii(tokens, i, Direction::Backward)
+                    .is_some()
+            } else {
+                false
+            };
+            if has_prev_ascii {
+                continue;
+            }
+
+            // 向后查找 scope（跳过空白）
+            let Some(scope_idx) = self.find_adjacent_ascii(tokens, i, Direction::Forward) else {
+                continue;
+            };
+
+            // 查找 / 分隔符
+            let Some(slash_idx) = self.find_next_non_whitespace(tokens, scope_idx) else {
+                continue;
+            };
+            if tokens[slash_idx].text != "/" {
+                continue;
+            }
+
+            // 查找 name
+            let Some(name_idx) = self.find_adjacent_ascii(tokens, slash_idx, Direction::Forward)
+            else {
+                continue;
+            };
+
+            let start = token.start;
+            let end = tokens[name_idx].end;
+            spans.push(Span {
+                text: text[start..end].to_string(),
+                start,
+                end,
+                span_type: SpanType::Technical,
+            });
+        }
+
+        spans
+    }
+
+    /// 检测驼峰/帕斯卡命名标识符
+    fn detect_identifiers(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        let mut spans = Vec::new();
+
+        for token in tokens {
+            if token.token_type != TokenType::Ascii {
+                continue;
+            }
+
+            if self.is_identifier_token(&token.text) {
+                spans.push(Span {
+                    text: text[token.start..token.end].to_string(),
+                    start: token.start,
+                    end: token.end,
+                    span_type: SpanType::Identifier,
+                });
+            }
+        }
+
+        spans
+    }
+
     /// 查找邮箱用户名的起始位置（向前扩展连续数字段）
     ///
     /// 支持 "10455 3588 艾特" 这种多个数字段的口语输入
@@ -373,14 +665,223 @@ impl TechSpanDetector {
         }
     }
 
+    fn find_next_non_whitespace(&self, tokens: &[Token], from: usize) -> Option<usize> {
+        for i in (from + 1)..tokens.len() {
+            if tokens[i].token_type != TokenType::Whitespace {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn find_prev_non_whitespace(&self, tokens: &[Token], from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+
+        for i in (0..from).rev() {
+            if tokens[i].token_type != TokenType::Whitespace {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn is_dot_text(&self, text: &str) -> bool {
+        text == "." || text == "点" || text == "點"
+    }
+
+    fn is_after_email_at(&self, tokens: &[Token], idx: usize) -> bool {
+        let Some(prev_idx) = self.find_prev_non_whitespace(tokens, idx) else {
+            return false;
+        };
+
+        let prev = &tokens[prev_idx].text;
+        prev == "@" || prev == "艾特" || prev.eq_ignore_ascii_case("at")
+    }
+
+    fn is_url_tld(&self, s: &str) -> bool {
+        matches!(
+            s.to_ascii_lowercase().as_str(),
+            "com"
+                | "org"
+                | "net"
+                | "io"
+                | "dev"
+                | "app"
+                | "ai"
+                | "co"
+                | "cn"
+                | "edu"
+                | "gov"
+                | "tech"
+                | "xyz"
+                | "me"
+                | "us"
+                | "uk"
+        )
+    }
+
+    fn find_ascii_after_scheme(&self, tokens: &[Token], from: usize) -> Option<usize> {
+        let mut i = from + 1;
+        while i < tokens.len() {
+            let t = &tokens[i];
+
+            if t.token_type == TokenType::Whitespace {
+                i += 1;
+                continue;
+            }
+
+            // 允许 http(s) 后的分隔符（: /）
+            if t.text == ":" || t.text == "/" {
+                i += 1;
+                continue;
+            }
+
+            if t.token_type == TokenType::Ascii {
+                return Some(i);
+            }
+
+            break;
+        }
+
+        None
+    }
+
+    fn find_domain_end(&self, tokens: &[Token], start: usize) -> Option<usize> {
+        if start >= tokens.len() || tokens[start].token_type != TokenType::Ascii {
+            return None;
+        }
+
+        let mut j = start + 1;
+        let mut last_ascii_idx = start;
+        let mut saw_dot = false;
+        let mut last_label_is_tld = self.is_url_tld(&tokens[start].text);
+
+        while j < tokens.len() {
+            // 跳过空白
+            if tokens[j].token_type == TokenType::Whitespace {
+                j += 1;
+                continue;
+            }
+
+            // 允许点分隔（. 或 口语点）
+            if self.is_dot_text(&tokens[j].text) {
+                saw_dot = true;
+                j += 1;
+
+                while j < tokens.len() && tokens[j].token_type == TokenType::Whitespace {
+                    j += 1;
+                }
+
+                if j >= tokens.len() || tokens[j].token_type != TokenType::Ascii {
+                    break;
+                }
+
+                last_ascii_idx = j;
+                last_label_is_tld = self.is_url_tld(&tokens[j].text);
+                j += 1;
+                continue;
+            }
+
+            // 允许域名 label 内部连字符
+            if tokens[j].text == "-" {
+                j += 1;
+                while j < tokens.len() && tokens[j].token_type == TokenType::Whitespace {
+                    j += 1;
+                }
+
+                if j < tokens.len() && tokens[j].token_type == TokenType::Ascii {
+                    last_ascii_idx = j;
+                    // 连字符表示仍在同一 label 内，结尾已不再是纯 TLD
+                    last_label_is_tld = false;
+                    j += 1;
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        if saw_dot && last_label_is_tld {
+            Some(last_ascii_idx)
+        } else {
+            None
+        }
+    }
+
+    fn is_identifier_token(&self, token: &str) -> bool {
+        if token.len() < 6 {
+            return false;
+        }
+
+        if !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+
+        let mut has_upper = false;
+        let mut has_lower = false;
+        let mut transitions = 0;
+        let mut has_camel_boundary = false;
+        let mut prev_alpha_is_upper: Option<bool> = None;
+
+        for ch in token.chars() {
+            let is_upper = if ch.is_ascii_uppercase() {
+                has_upper = true;
+                Some(true)
+            } else if ch.is_ascii_lowercase() {
+                has_lower = true;
+                Some(false)
+            } else {
+                None
+            };
+
+            if let (Some(prev), Some(curr)) = (prev_alpha_is_upper, is_upper) {
+                if prev != curr {
+                    transitions += 1;
+                }
+                if !prev && curr {
+                    has_camel_boundary = true;
+                }
+            }
+
+            if is_upper.is_some() {
+                prev_alpha_is_upper = is_upper;
+            }
+        }
+
+        let upper_prefix_len = token.chars().take_while(|c| c.is_ascii_uppercase()).count();
+        let has_acronym_prefix = upper_prefix_len >= 2
+            && token
+                .chars()
+                .nth(upper_prefix_len)
+                .map(|c| c.is_ascii_lowercase())
+                .unwrap_or(false);
+
+        has_upper && has_lower && (transitions >= 2 || has_camel_boundary || has_acronym_prefix)
+    }
+
+    fn span_priority(&self, span_type: &SpanType) -> u8 {
+        match span_type {
+            SpanType::Path => 8,
+            SpanType::Url => 7,
+            SpanType::FileName => 6,
+            SpanType::Email => 5,
+            SpanType::CliFlag => 4,
+            SpanType::Identifier => 3,
+            SpanType::Version => 2,
+            SpanType::Technical => 1,
+        }
+    }
+
     /// 合并重叠片段
-    fn merge_overlapping(&self, mut spans: Vec<Span>) -> Vec<Span> {
+    fn merge_overlapping(&self, text: &str, mut spans: Vec<Span>) -> Vec<Span> {
         if spans.is_empty() {
             return spans;
         }
 
         // 按起始位置排序
-        spans.sort_by_key(|s| s.start);
+        spans.sort_by_key(|s| (s.start, s.end));
 
         let mut merged = Vec::new();
         let mut current = spans.remove(0);
@@ -390,16 +891,20 @@ impl TechSpanDetector {
                 // 重叠，合并
                 if span.end > current.end {
                     current.end = span.end;
-                    // 优先级：Path > FileName > Version > Technical
-                    if matches!(span.span_type, SpanType::Path) {
-                        current.span_type = SpanType::Path;
-                    }
                 }
+
+                if self.span_priority(&span.span_type) > self.span_priority(&current.span_type) {
+                    current.span_type = span.span_type.clone();
+                }
+
+                current.text = text[current.start..current.end].to_string();
             } else {
+                current.text = text[current.start..current.end].to_string();
                 merged.push(current);
                 current = span;
             }
         }
+        current.text = text[current.start..current.end].to_string();
         merged.push(current);
 
         merged
@@ -527,6 +1032,214 @@ mod tests {
             email_span.text.ends_with("com"),
             "邮箱应该以 'com' 结尾，实际: {}",
             email_span.text
+        );
+    }
+
+    #[test]
+    fn test_detect_url() {
+        let detector = TechSpanDetector::default();
+        let text = "打开 github 点 com";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans.iter().any(|s| s.span_type == SpanType::Url));
+    }
+
+    #[test]
+    fn test_detect_cli_flag() {
+        let detector = TechSpanDetector::default();
+        let text = "使用 --verbose 参数";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans.iter().any(|s| s.span_type == SpanType::CliFlag));
+    }
+
+    #[test]
+    fn test_detect_identifier() {
+        let detector = TechSpanDetector::default();
+        let text = "调用 getElementById 获取节点";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans.iter().any(|s| s.span_type == SpanType::Identifier));
+    }
+
+    #[test]
+    fn test_detect_identifier_with_acronym_prefix() {
+        let detector = TechSpanDetector::default();
+        let text = "解析 JSONParser 的输出";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(spans.iter().any(|s| s.span_type == SpanType::Identifier));
+    }
+
+    #[test]
+    fn test_do_not_detect_plain_title_case_word_as_identifier() {
+        let detector = TechSpanDetector::default();
+        let text = "打开 Github 页面";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(!spans.iter().any(|s| s.span_type == SpanType::Identifier));
+    }
+
+    #[test]
+    fn test_url_requires_tld_on_final_label() {
+        let detector = TechSpanDetector::default();
+        let text = "访问 com 点 internal";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(!spans.iter().any(|s| s.span_type == SpanType::Url));
+    }
+
+    // ===== P1-2: 包名检测测试 =====
+
+    #[test]
+    fn test_detect_package_scoped() {
+        let detector = TechSpanDetector::default();
+        let text = "安装 @vue/cli 工具";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        // @vue/cli 应被某个 span 覆盖（可能是 Path 或 Technical，因含 /）
+        assert!(
+            spans.iter().any(|s| s.text.contains("@vue") || s.text.contains("vue/cli")),
+            "@vue/cli 应被识别为技术片段，实际 spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_detect_package_types() {
+        let detector = TechSpanDetector::default();
+        let text = "需要 @types/node 类型定义";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            spans.iter().any(|s| s.text.contains("@types") || s.text.contains("types/node")),
+            "@types/node 应被识别为技术片段"
+        );
+    }
+
+    #[test]
+    fn test_detect_package_does_not_match_email() {
+        let detector = TechSpanDetector::default();
+        let text = "test@example.com";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        // 应识别为邮箱，不应被包名检测器误匹配
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.span_type == SpanType::Technical && s.text.contains("@example")),
+            "邮箱不应被误识别为包名"
+        );
+    }
+
+    // ===== P1-2: 十六进制检测测试 =====
+
+    #[test]
+    fn test_detect_hex_0x() {
+        let detector = TechSpanDetector::default();
+        let text = "地址是 0xDEADBEEF";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        // 0xDEADBEEF 可能被 Identifier 或 Technical 覆盖，只要被 span 保护即可
+        assert!(
+            spans.iter().any(|s| s.text.contains("0xDEADBEEF")),
+            "0xDEADBEEF 应被识别为技术片段，实际 spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_detect_hex_0x_short() {
+        let detector = TechSpanDetector::default();
+        let text = "值为 0xFF";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            spans.iter().any(|s| s.span_type == SpanType::Technical),
+            "0xFF 应被识别为技术片段"
+        );
+    }
+
+    #[test]
+    fn test_detect_hex_color_6() {
+        let detector = TechSpanDetector::default();
+        let text = "颜色 #FF5733 很好看";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            spans.iter().any(|s| s.span_type == SpanType::Technical),
+            "#FF5733 应被识别为技术片段，实际 spans: {:?}",
+            spans
+        );
+    }
+
+    #[test]
+    fn test_detect_hex_color_3() {
+        let detector = TechSpanDetector::default();
+        let text = "用 #FFF 白色";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            spans.iter().any(|s| s.span_type == SpanType::Technical),
+            "#FFF 应被识别为技术片段"
+        );
+    }
+
+    #[test]
+    fn test_detect_hex_color_8_rgba() {
+        let detector = TechSpanDetector::default();
+        let text = "透明色 #FF573380";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            spans.iter().any(|s| s.span_type == SpanType::Technical),
+            "#FF573380 应被识别为技术片段"
+        );
+    }
+
+    #[test]
+    fn test_hex_color_invalid_length_not_detected() {
+        let detector = TechSpanDetector::default();
+        // 5 位十六进制不是有效颜色码
+        let text = "测试 #ABCDE 值";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.span_type == SpanType::Technical && s.text.contains("#ABCDE")),
+            "#ABCDE (5位) 不应被识别为颜色码"
+        );
+    }
+
+    #[test]
+    fn test_hash_chinese_not_detected() {
+        let detector = TechSpanDetector::default();
+        // # 后面是中文，不应被误识别
+        let text = "#标题内容";
+        let tokens = Tokenizer::tokenize(text);
+        let spans = detector.detect(text, &tokens);
+
+        assert!(
+            !spans
+                .iter()
+                .any(|s| s.span_type == SpanType::Technical && s.text.starts_with('#')),
+            "#标题 不应被误识别为十六进制"
         );
     }
 }

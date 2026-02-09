@@ -1,4 +1,5 @@
 use crate::asr::utils;
+use crate::config::AsrLanguageMode;
 use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -9,21 +10,58 @@ const QWEN_API_URL: &str =
 const MODEL: &str = "qwen3-asr-flash";
 const MAX_RETRIES: u32 = 2;
 
+fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
+    match language_mode {
+        AsrLanguageMode::Auto => "auto",
+        AsrLanguageMode::Zh => "zh",
+    }
+}
+
+fn build_request_body(language_mode: AsrLanguageMode, corpus_text: &str, audio_base64: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": MODEL,
+        "input": {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": [{"text": corpus_text}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"audio": format!("data:audio/wav;base64,{}", audio_base64)}]
+                }
+            ]
+        },
+        "parameters": {
+            // NOTE: 疑似无效参数，暂时注释掉
+            // "result_format": "message",
+            // "enable_itn": true,
+            // "disfluency_removal": true,
+            "language": asr_language_code(language_mode),
+            "asr_options": {
+                "enable_itn": true
+            }
+        }
+    })
+}
+
 #[derive(Clone)]
 pub struct QwenASRClient {
     api_key: String,
     client: reqwest::Client,
     max_retries: u32,
     dictionary: Vec<String>,
+    language_mode: AsrLanguageMode,
 }
 
 impl QwenASRClient {
-    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
         Self {
             api_key,
             client: utils::create_http_client(),
             max_retries: MAX_RETRIES,
             dictionary,
+            language_mode,
         }
     }
 
@@ -78,31 +116,7 @@ impl QwenASRClient {
             tracing::info!("Qwen HTTP ASR 词库: 未配置");
         }
 
-        let request_body = serde_json::json!({
-            "model": MODEL,
-            "input": {
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": [{"text": corpus_text}]
-                    },
-                    {
-                        "role": "user",
-                        "content": [{"audio": format!("data:audio/wav;base64,{}", audio_base64)}]
-                    }
-                ]
-            },
-            "parameters": {
-                // NOTE: 疑似无效参数，暂时注释掉
-                // "result_format": "message",
-                // "enable_itn": true,
-                // "disfluency_removal": true,
-                // "language": "zh",
-                "asr_options": {
-                    "enable_itn": true
-                }
-            }
-        });
+        let request_body = build_request_body(self.language_mode, &corpus_text, &audio_base64);
 
         tracing::info!("发送请求到: {}", QWEN_API_URL);
 
@@ -146,5 +160,23 @@ impl QwenASRClient {
 
         tracing::info!("转录完成: {}", text);
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_request_body;
+    use crate::config::AsrLanguageMode;
+
+    #[test]
+    fn build_request_body_sets_auto_language() {
+        let request = build_request_body(AsrLanguageMode::Auto, "", "abc");
+        assert_eq!(request["parameters"]["language"], "auto");
+    }
+
+    #[test]
+    fn build_request_body_sets_zh_language() {
+        let request = build_request_body(AsrLanguageMode::Zh, "", "abc");
+        assert_eq!(request["parameters"]["language"], "zh");
     }
 }

@@ -1,4 +1,5 @@
 // 豆包流式 ASR WebSocket 客户端（二进制协议）
+use crate::config::AsrLanguageMode;
 use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -14,6 +15,21 @@ use tokio_tungstenite::{connect_async, tungstenite::http, tungstenite::Message};
 const WEBSOCKET_URL: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 6;
+
+fn build_context_data(language_mode: AsrLanguageMode) -> serde_json::Value {
+    match language_mode {
+        AsrLanguageMode::Auto => serde_json::json!([
+            {"text": "当前场景为技术听写，中英文混合"},
+            {"text": "保留英文专有名词和技术术语，如 Kubernetes, GPT-4o, Claude"},
+            {"text": "保留语气词，去除尾部句号"},
+        ]),
+        AsrLanguageMode::Zh => serde_json::json!([
+            {"text": "你好，请问有什么可以帮您的"},
+            {"text": "豆包语音识别真的不错呀"},
+            {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
+        ]),
+    }
+}
 
 /// 生成随机的 Sec-WebSocket-Key
 fn generate_websocket_key() -> String {
@@ -66,14 +82,21 @@ pub struct DoubaoRealtimeClient {
     app_id: String,
     access_key: String,
     dictionary: Vec<String>,
+    language_mode: AsrLanguageMode,
 }
 
 impl DoubaoRealtimeClient {
-    pub fn new(app_id: String, access_key: String, dictionary: Vec<String>) -> Self {
+    pub fn new(
+        app_id: String,
+        access_key: String,
+        dictionary: Vec<String>,
+        language_mode: AsrLanguageMode,
+    ) -> Self {
         Self {
             app_id,
             access_key,
             dictionary,
+            language_mode,
         }
     }
 
@@ -109,14 +132,10 @@ impl DoubaoRealtimeClient {
 
         // 添加词库支持和对话上下文
         {
+            let context_data = build_context_data(self.language_mode);
             let mut context_obj = serde_json::json!({
                 "context_type": "dialog_ctx",
-                "context_data": [
-                    // 大模型的约束，但是效果存疑
-                    {"text": "你好，请问有什么可以帮您的"},
-                    {"text": "豆包语音识别真的不错呀"},
-                    {"text": "当前聊天的场景是日常聊天，因此保留语气词，去除尾部句号"},
-                    ]
+                "context_data": context_data
             });
 
             if !self.dictionary.is_empty() {
@@ -425,4 +444,36 @@ fn parse_response(data: &[u8]) -> Result<(String, bool)> {
     }
 
     Err(anyhow::anyhow!("中间响应，等待更多数据"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_context_data;
+    use crate::config::AsrLanguageMode;
+
+    #[test]
+    fn builds_mixed_language_context_for_auto_mode() {
+        let context_data = build_context_data(AsrLanguageMode::Auto);
+        let joined = context_data
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("中英文混合"));
+    }
+
+    #[test]
+    fn builds_chat_context_for_zh_mode() {
+        let context_data = build_context_data(AsrLanguageMode::Zh);
+        let joined = context_data
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("日常聊天"));
+    }
 }

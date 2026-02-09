@@ -132,6 +132,33 @@ export function AsrPage({
             <div className="text-xs text-stone-400 font-semibold">
               模型：{ASR_PROVIDERS[asrConfig.selection.active_provider].model}
             </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-stone-500">识别语言</label>
+              <ConfigSelect
+                value={asrConfig.language_mode}
+                onChange={(mode) => {
+                  setAsrConfig((prev) => ({
+                    ...prev,
+                    language_mode: mode,
+                  }));
+                }}
+                onCommit={async (mode) => {
+                  await saveImmediately({
+                    asrConfig: {
+                      ...asrConfig,
+                      language_mode: mode,
+                    },
+                  });
+                }}
+                syncStatus={syncStatus}
+                disabled={isRunning}
+                options={[
+                  { value: "auto", label: "自动识别（推荐）" },
+                  { value: "zh", label: "中文优先" },
+                ]}
+              />
+            </div>
           </div>
         </div>
 

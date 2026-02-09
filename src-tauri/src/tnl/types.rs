@@ -56,6 +56,12 @@ pub enum SpanType {
     FileName,
     /// 路径（如 src/lib.rs）
     Path,
+    /// URL/域名（如 https://example.com, github.com）
+    Url,
+    /// CLI flag（如 --verbose, -p）
+    CliFlag,
+    /// 标识符（如 getElementById, TypeScript）
+    Identifier,
     /// 版本号（如 1.2.3）
     Version,
     /// 邮箱地址（如 test@example.com）

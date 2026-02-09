@@ -527,10 +527,20 @@ impl Default for AsrSelection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AsrLanguageMode {
+    Zh,
+    #[default]
+    Auto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
     pub credentials: AsrCredentials,
     pub selection: AsrSelection,
+    #[serde(default)]
+    pub language_mode: AsrLanguageMode,
 }
 
 impl Default for AsrConfig {
@@ -538,6 +548,7 @@ impl Default for AsrConfig {
         Self {
             credentials: AsrCredentials::default(),
             selection: AsrSelection::default(),
+            language_mode: AsrLanguageMode::Auto,
         }
     }
 }
@@ -1759,5 +1770,15 @@ impl AppConfig {
                 Err(e.into())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AsrConfig, AsrLanguageMode};
+
+    #[test]
+    fn asr_config_defaults_to_auto_language_mode() {
+        assert_eq!(AsrConfig::default().language_mode, AsrLanguageMode::Auto);
     }
 }

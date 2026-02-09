@@ -1,6 +1,7 @@
 // qwen3-asr-flash-realtime WebSocket 客户端
 // 实时流式语音识别，边录音边发送
 
+use crate::config::AsrLanguageMode;
 use crate::dictionary_utils::entries_to_words;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
@@ -21,6 +22,38 @@ const WEBSOCKET_URL: &str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
 const MODEL: &str = "qwen3-asr-flash-realtime";
 const IDLE_TIMEOUT_SECS: u64 = 180; // 3 分钟空闲超时
 const TRANSCRIPTION_TIMEOUT_SECS: u64 = 10; // 转录结果等待超时（秒）
+
+fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
+    match language_mode {
+        AsrLanguageMode::Auto => "auto",
+        AsrLanguageMode::Zh => "zh",
+    }
+}
+
+fn build_input_audio_transcription(
+    language_mode: AsrLanguageMode,
+    dictionary: &[String],
+) -> serde_json::Value {
+    let mut input_audio_transcription = serde_json::json!({
+        "language": asr_language_code(language_mode)
+    });
+
+    let purified_words = entries_to_words(dictionary);
+    let corpus_text = purified_words.join("、");
+
+    if !corpus_text.is_empty() {
+        tracing::info!(
+            "Qwen 流式 ASR 词库: {} 个词（已提纯）, corpus={}",
+            purified_words.len(),
+            corpus_text
+        );
+        input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
+    } else {
+        tracing::info!("Qwen 流式 ASR 词库: 未配置");
+    }
+
+    input_audio_transcription
+}
 
 /// WebSocket 实时 ASR 会话
 pub struct RealtimeSession {
@@ -86,6 +119,7 @@ pub struct ConnectionPool {
     api_key: String,
     connection: Arc<Mutex<Option<PooledConnection>>>,
     dictionary: Vec<String>,
+    language_mode: AsrLanguageMode,
 }
 
 struct PooledConnection {
@@ -93,11 +127,12 @@ struct PooledConnection {
 }
 
 impl ConnectionPool {
-    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
         Self {
             api_key,
             connection: Arc::new(Mutex::new(None)),
             dictionary,
+            language_mode,
         }
     }
 
@@ -154,23 +189,9 @@ impl ConnectionPool {
         let (result_tx, result_rx) = mpsc::channel::<Result<String>>(1);
 
         // 发送 session.update 配置会话
-        // 词库提纯（去除 |auto 后缀）后用顿号分隔
-        let purified_words = entries_to_words(&self.dictionary);
-        let corpus_text = purified_words.join("、");
-
-        let mut input_audio_transcription = serde_json::json!({
-            "language": "zh"
-        });
-        if !corpus_text.is_empty() {
-            tracing::info!(
-                "Qwen 流式 ASR 词库: {} 个词（已提纯）, corpus={}",
-                purified_words.len(),
-                corpus_text
-            );
-            input_audio_transcription["corpus"] = serde_json::json!({"text": corpus_text});
-        } else {
-            tracing::info!("Qwen 流式 ASR 词库: 未配置");
-        }
+        let input_audio_transcription =
+            build_input_audio_transcription(self.language_mode, &self.dictionary);
+        let corpus_for_check = entries_to_words(&self.dictionary).join("、");
 
         let session_update = serde_json::json!({
             "event_id": format!("event_{}", std::time::SystemTime::now()
@@ -243,7 +264,6 @@ impl ConnectionPool {
         });
 
         // 启动接收任务
-        let corpus_for_check = corpus_text.clone();
         tokio::spawn(async move {
             let mut final_text = String::new();
             let mut has_result = false;
@@ -370,14 +390,34 @@ pub struct QwenRealtimeClient {
 }
 
 impl QwenRealtimeClient {
-    pub fn new(api_key: String, dictionary: Vec<String>) -> Self {
+    pub fn new(api_key: String, dictionary: Vec<String>, language_mode: AsrLanguageMode) -> Self {
         Self {
-            pool: ConnectionPool::new(api_key, dictionary),
+            pool: ConnectionPool::new(api_key, dictionary, language_mode),
         }
     }
 
     /// 创建新的转录会话
     pub async fn start_session(&self) -> Result<RealtimeSession> {
         self.pool.get_session().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_input_audio_transcription;
+    use crate::config::AsrLanguageMode;
+
+    #[test]
+    fn builds_auto_language_for_qwen_session_update() {
+        let dictionary: Vec<String> = vec![];
+        let transcription = build_input_audio_transcription(AsrLanguageMode::Auto, &dictionary);
+        assert_eq!(transcription["language"], "auto");
+    }
+
+    #[test]
+    fn builds_zh_language_for_qwen_session_update() {
+        let dictionary: Vec<String> = vec![];
+        let transcription = build_input_audio_transcription(AsrLanguageMode::Zh, &dictionary);
+        assert_eq!(transcription["language"], "zh");
     }
 }

@@ -5,7 +5,7 @@
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::tnl::fuzzy::FuzzyMatcher;
+use crate::tnl::fuzzy::{is_tech_token, FuzzyMatcher};
 use crate::tnl::is_ascii_digits;
 use crate::tnl::rules::{ExtensionWhitelist, SpokenSymbolMap};
 use crate::tnl::tech_span::TechSpanDetector;
@@ -82,8 +82,7 @@ fn merge_spaced_letters(text: &str) -> (String, Vec<Replacement>) {
             }
 
             if letters.len() >= 2 {
-                let merged: String =
-                    letters.iter().map(|c| c.to_ascii_uppercase()).collect();
+                let merged: String = letters.iter().map(|c| c.to_ascii_uppercase()).collect();
                 let original: String = chars[seq_start..end].iter().collect();
 
                 replacements.push(Replacement {
@@ -469,7 +468,8 @@ impl TnlEngine {
             // 检查是否是英文单词的开始
             let is_english_word = token.token_type == TokenType::Ascii
                 && token.text.len() >= 2
-                && token.text.chars().all(|c| c.is_ascii_alphabetic());
+                && (token.text.chars().all(|c| c.is_ascii_alphabetic())
+                    || is_tech_token(&token.text));
 
             if !is_english_word {
                 result.push_str(&token.text);
@@ -493,7 +493,8 @@ impl TnlEngine {
                         let after_space = &tokens[j];
                         let is_eng = after_space.token_type == TokenType::Ascii
                             && after_space.text.len() >= 2
-                            && after_space.text.chars().all(|c| c.is_ascii_alphabetic());
+                            && (after_space.text.chars().all(|c| c.is_ascii_alphabetic())
+                                || is_tech_token(&after_space.text));
                         if is_eng {
                             english_run.push((j, after_space));
                             j += 1;
@@ -933,6 +934,16 @@ mod tests {
         // 应该同时包含音标替换和口语符号替换
         assert!(result.text.contains("OpenClaude"));
         // 注意：.ai 可能不会被识别为技术片段，取决于 tech_span_detector
+    }
+
+    #[test]
+    fn test_normalize_phonetic_tech_token() {
+        // 技术 token：gpt4 -> gpt4o
+        let engine = TnlEngine::new(vec!["gpt4o".to_string()]);
+
+        let result = engine.normalize("请使用 gpt4 模型");
+        assert!(result.changed);
+        assert!(result.text.contains("gpt4o"));
     }
 
     // === 连续单字母合并测试 ===
