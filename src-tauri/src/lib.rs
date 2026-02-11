@@ -147,6 +147,7 @@ struct TrayMenuState {
     dictionary_enhancement_item: CheckMenuItem<tauri::Wry>,
     asr_qwen_item: CheckMenuItem<tauri::Wry>,
     asr_doubao_item: CheckMenuItem<tauri::Wry>,
+    asr_doubao_ime_item: CheckMenuItem<tauri::Wry>,
 }
 
 const TRAY_MENU_ID_SHOW: &str = "show";
@@ -155,6 +156,10 @@ const TRAY_MENU_ID_TOGGLE_POST_PROCESS: &str = "tray_toggle_post_process";
 const TRAY_MENU_ID_TOGGLE_DICTIONARY_ENHANCEMENT: &str = "tray_toggle_dictionary_enhancement";
 const TRAY_MENU_ID_ASR_QWEN: &str = "tray_asr_qwen";
 const TRAY_MENU_ID_ASR_DOUBAO: &str = "tray_asr_doubao";
+const TRAY_MENU_ID_ASR_DOUBAO_IME: &str = "tray_asr_doubao_ime";
+
+/// 全局互斥标志：防止并发 ASR 引擎切换导致多个 restart 并行执行
+static TRAY_ASR_SWITCHING: AtomicBool = AtomicBool::new(false);
 
 fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     let Some(tray_state) = app_handle.try_state::<TrayMenuState>() else {
@@ -177,6 +182,7 @@ fn sync_tray_menu_from_config(app_handle: &AppHandle, config: &AppConfig) {
     sync_asr_provider_checks(
         &tray_state.asr_qwen_item,
         &tray_state.asr_doubao_item,
+        &tray_state.asr_doubao_ime_item,
         &config.asr_config.selection.active_provider,
     );
 }
@@ -206,6 +212,7 @@ fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
     match provider {
         config::AsrProvider::Qwen => "千问",
         config::AsrProvider::Doubao => "豆包",
+        config::AsrProvider::DoubaoIme => "豆包输入法",
         config::AsrProvider::SiliconFlow => "硅基流动",
     }
 }
@@ -227,6 +234,8 @@ fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider
                     .trim()
                     .is_empty()
         }
+        // DoubaoIme 凭证是首次使用时自动注册获取的，无需用户预先配置
+        config::AsrProvider::DoubaoIme => true,
         config::AsrProvider::SiliconFlow => !config
             .asr_config
             .credentials
@@ -239,16 +248,21 @@ fn is_asr_provider_configured(config: &AppConfig, provider: &config::AsrProvider
 fn sync_asr_provider_checks(
     qwen_item: &CheckMenuItem<tauri::Wry>,
     doubao_item: &CheckMenuItem<tauri::Wry>,
+    doubao_ime_item: &CheckMenuItem<tauri::Wry>,
     provider: &config::AsrProvider,
 ) {
     let qwen_checked = matches!(provider, config::AsrProvider::Qwen);
     let doubao_checked = matches!(provider, config::AsrProvider::Doubao);
+    let doubao_ime_checked = matches!(provider, config::AsrProvider::DoubaoIme);
 
     if let Err(e) = qwen_item.set_checked(qwen_checked) {
         tracing::warn!("更新托盘千问勾选状态失败: {}", e);
     }
     if let Err(e) = doubao_item.set_checked(doubao_checked) {
         tracing::warn!("更新托盘豆包勾选状态失败: {}", e);
+    }
+    if let Err(e) = doubao_ime_item.set_checked(doubao_ime_checked) {
+        tracing::warn!("更新托盘豆包输入法勾选状态失败: {}", e);
     }
 }
 
@@ -315,22 +329,23 @@ fn toggle_post_process_from_tray(
     app_handle: &AppHandle,
     post_process_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    let new_value = {
+    // 先从磁盘加载配置，修改后保存，成功后再更新内存状态和菜单（避免 TOCTOU）
+    let mut config = load_persisted_config()?;
+    let new_value = !config.enable_llm_post_process;
+    config.enable_llm_post_process = new_value;
+    save_persisted_config(app_handle, &config)?;
+
+    // 磁盘保存成功后，再更新内存状态
+    {
         let state = app_handle.state::<AppState>();
-        let mut enabled = state.enable_post_process.lock().unwrap();
-        *enabled = !*enabled;
-        *enabled
-    };
+        *state.enable_post_process.lock().unwrap() = new_value;
+    }
 
     post_process_item
         .set_checked(new_value)
         .map_err(|e| format!("更新托盘语句润色勾选状态失败: {}", e))?;
 
     refresh_post_processor_after_toggle(app_handle);
-
-    let mut config = load_persisted_config()?;
-    config.enable_llm_post_process = new_value;
-    save_persisted_config(app_handle, &config)?;
 
     tracing::info!("托盘已{}语句润色", if new_value { "开启" } else { "关闭" });
     Ok(())
@@ -340,22 +355,23 @@ fn toggle_dictionary_enhancement_from_tray(
     app_handle: &AppHandle,
     dictionary_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    let new_value = {
+    // 先从磁盘加载配置，修改后保存，成功后再更新内存状态和菜单（避免 TOCTOU）
+    let mut config = load_persisted_config()?;
+    let new_value = !config.enable_dictionary_enhancement;
+    config.enable_dictionary_enhancement = new_value;
+    save_persisted_config(app_handle, &config)?;
+
+    // 磁盘保存成功后，再更新内存状态
+    {
         let state = app_handle.state::<AppState>();
-        let mut enabled = state.enable_dictionary_enhancement.lock().unwrap();
-        *enabled = !*enabled;
-        *enabled
-    };
+        *state.enable_dictionary_enhancement.lock().unwrap() = new_value;
+    }
 
     dictionary_item
         .set_checked(new_value)
         .map_err(|e| format!("更新托盘词库增强勾选状态失败: {}", e))?;
 
     refresh_post_processor_after_toggle(app_handle);
-
-    let mut config = load_persisted_config()?;
-    config.enable_dictionary_enhancement = new_value;
-    save_persisted_config(app_handle, &config)?;
 
     tracing::info!("托盘已{}词库增强", if new_value { "开启" } else { "关闭" });
     Ok(())
@@ -366,13 +382,42 @@ async fn switch_asr_provider_from_tray(
     target_provider: config::AsrProvider,
     qwen_item: CheckMenuItem<tauri::Wry>,
     doubao_item: CheckMenuItem<tauri::Wry>,
+    doubao_ime_item: CheckMenuItem<tauri::Wry>,
+) -> Result<(), String> {
+    // 并发互斥：防止快速连续点击导致多个 restart 并行执行
+    if TRAY_ASR_SWITCHING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        tracing::warn!("ASR 引擎切换正在进行中，忽略重复请求");
+        return Ok(());
+    }
+    let result = switch_asr_provider_from_tray_inner(
+        &app_handle,
+        target_provider,
+        &qwen_item,
+        &doubao_item,
+        &doubao_ime_item,
+    )
+    .await;
+    TRAY_ASR_SWITCHING.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn switch_asr_provider_from_tray_inner(
+    app_handle: &AppHandle,
+    target_provider: config::AsrProvider,
+    qwen_item: &CheckMenuItem<tauri::Wry>,
+    doubao_item: &CheckMenuItem<tauri::Wry>,
+    doubao_ime_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
     let mut config = load_persisted_config()?;
 
     if !is_asr_provider_configured(&config, &target_provider) {
         sync_asr_provider_checks(
-            &qwen_item,
-            &doubao_item,
+            qwen_item,
+            doubao_item,
+            doubao_ime_item,
             &config.asr_config.selection.active_provider,
         );
         return Err(format!(
@@ -382,19 +427,19 @@ async fn switch_asr_provider_from_tray(
     }
 
     if config.asr_config.selection.active_provider == target_provider {
-        sync_asr_provider_checks(&qwen_item, &doubao_item, &target_provider);
+        sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
         return Ok(());
     }
 
     config.asr_config.selection.active_provider = target_provider.clone();
-    save_persisted_config(&app_handle, &config)?;
+    save_persisted_config(app_handle, &config)?;
 
     {
         let state = app_handle.state::<AppState>();
         *state.realtime_provider.lock().unwrap() = Some(target_provider.clone());
     }
 
-    sync_asr_provider_checks(&qwen_item, &doubao_item, &target_provider);
+    sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
 
     let is_running = {
         let state = app_handle.state::<AppState>();
@@ -403,7 +448,7 @@ async fn switch_asr_provider_from_tray(
     };
 
     if is_running {
-        restart_service_with_config(app_handle, config).await?;
+        restart_service_with_config(app_handle.clone(), config).await?;
     }
 
     tracing::info!(
@@ -544,10 +589,9 @@ async fn save_config(
     sync_tray_menu_from_config(&app, &config);
 
     tracing::info!(
-        "[save_config] 发送 config_updated 事件, theme={}",
+        "[save_config] 配置已保存, theme={}",
         config.theme
     );
-    let _ = app.emit("config_updated", &config);
 
     Ok("配置已保存".to_string())
 }
@@ -3724,11 +3768,19 @@ pub fn run() {
                 matches!(initial_active_provider, config::AsrProvider::Doubao),
                 None::<&str>,
             )?;
+            let asr_doubao_ime_item = CheckMenuItem::with_id(
+                app,
+                TRAY_MENU_ID_ASR_DOUBAO_IME,
+                "豆包输入法(免费)",
+                true,
+                matches!(initial_active_provider, config::AsrProvider::DoubaoIme),
+                None::<&str>,
+            )?;
             let asr_switch_submenu = Submenu::with_items(
                 app,
                 "切换语音识别引擎",
                 true,
-                &[&asr_qwen_item, &asr_doubao_item],
+                &[&asr_qwen_item, &asr_doubao_item, &asr_doubao_ime_item],
             )?;
 
             let menu = Menu::with_items(
@@ -3746,12 +3798,14 @@ pub fn run() {
             let dictionary_enhancement_item_for_event = dictionary_enhancement_item.clone();
             let asr_qwen_item_for_event = asr_qwen_item.clone();
             let asr_doubao_item_for_event = asr_doubao_item.clone();
+            let asr_doubao_ime_item_for_event = asr_doubao_ime_item.clone();
 
             app.manage(TrayMenuState {
                 post_process_item: post_process_item.clone(),
                 dictionary_enhancement_item: dictionary_enhancement_item.clone(),
                 asr_qwen_item: asr_qwen_item.clone(),
                 asr_doubao_item: asr_doubao_item.clone(),
+                asr_doubao_ime_item: asr_doubao_ime_item.clone(),
             });
 
             // 创建系统托盘图标
@@ -3787,12 +3841,14 @@ pub fn run() {
                         let app_handle = app.clone();
                         let asr_qwen_item = asr_qwen_item_for_event.clone();
                         let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = switch_asr_provider_from_tray(
                                 app_handle.clone(),
                                 config::AsrProvider::Qwen,
                                 asr_qwen_item,
                                 asr_doubao_item,
+                                asr_doubao_ime_item,
                             )
                             .await
                             {
@@ -3805,16 +3861,38 @@ pub fn run() {
                         let app_handle = app.clone();
                         let asr_qwen_item = asr_qwen_item_for_event.clone();
                         let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = switch_asr_provider_from_tray(
                                 app_handle.clone(),
                                 config::AsrProvider::Doubao,
                                 asr_qwen_item,
                                 asr_doubao_item,
+                                asr_doubao_ime_item,
                             )
                             .await
                             {
                                 tracing::error!("托盘切换 ASR 到豆包失败: {}", e);
+                                let _ = app_handle.emit("error", e);
+                            }
+                        });
+                    }
+                    TRAY_MENU_ID_ASR_DOUBAO_IME => {
+                        let app_handle = app.clone();
+                        let asr_qwen_item = asr_qwen_item_for_event.clone();
+                        let asr_doubao_item = asr_doubao_item_for_event.clone();
+                        let asr_doubao_ime_item = asr_doubao_ime_item_for_event.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = switch_asr_provider_from_tray(
+                                app_handle.clone(),
+                                config::AsrProvider::DoubaoIme,
+                                asr_qwen_item,
+                                asr_doubao_item,
+                                asr_doubao_ime_item,
+                            )
+                            .await
+                            {
+                                tracing::error!("托盘切换 ASR 到豆包输入法失败: {}", e);
                                 let _ = app_handle.emit("error", e);
                             }
                         });

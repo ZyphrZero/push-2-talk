@@ -6,6 +6,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import type {
+  AppConfig,
   AppStatus,
   AsrConfig,
   AssistantConfig,
@@ -43,6 +44,10 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
+
+/** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
+const EXTERNAL_UPDATE_SENTINEL = "__EXTERNAL_CONFIG_UPDATE__";
+
 function App() {
   const [currentVersion, setCurrentVersion] = useState(() =>
     localStorage.getItem('app_version') || ''
@@ -173,12 +178,16 @@ function App() {
   const configLoadEpochRef = useRef(0);
   const lastSeenConfigEpochRef = useRef(0);
   const autoSaveTimerRef = useRef<number | null>(null);
-  const handleExternalConfigUpdated = useCallback(() => {
+  const skipNextAutoSaveRef = useRef(false);
+  const handleExternalConfigUpdated = useCallback((_config: AppConfig) => {
     if (autoSaveTimerRef.current) {
       window.clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
     skipNextAutoSaveRef.current = true;
+    // 标记 applyRuntimeConfig 基准需要重置，防止外部配置触发冗余的后端热更新
+    // （后端已经通过 restart_service_with_config 处理过了）
+    lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
   }, []);
   const statusRef = useRef(status);
   useEffect(() => {
@@ -208,6 +217,12 @@ function App() {
   useEffect(() => {
     enableDictionaryEnhancementRef.current = enableDictionaryEnhancement;
   }, [enableDictionaryEnhancement]);
+  const handlePolishingFailed = useCallback((errorMessage: string) => {
+    const shortMsg = errorMessage.length > 50
+      ? errorMessage.slice(0, 50) + "..."
+      : errorMessage;
+    showToast(`润色失败：${shortMsg}，已显示原文`);
+  }, [showToast]);
   useTauriEventListeners({
     llmConfigRef,
     enablePostProcessRef,
@@ -238,13 +253,7 @@ function App() {
     onExternalConfigUpdated: handleExternalConfigUpdated,
     setHistory,
     setUsageStats,
-    onPolishingFailed: (errorMessage) => {
-      // 显示润色失败提示（截断过长的错误信息）
-      const shortMsg = errorMessage.length > 50
-        ? errorMessage.slice(0, 50) + "..."
-        : errorMessage;
-      showToast(`润色失败：${shortMsg}，已显示原文`);
-    },
+    onPolishingFailed: handlePolishingFailed,
   });
 
   // 取消 debounce timer 的回调，供即时保存使用
@@ -440,6 +449,12 @@ function App() {
       return;
     }
 
+    // 外部配置更新（托盘切换等）：后端已处理，仅重置基准，跳过冗余 apply
+    if (lastAppliedConfigHashRef.current === EXTERNAL_UPDATE_SENTINEL) {
+      lastAppliedConfigHashRef.current = configHash;
+      return;
+    }
+
     // 配置未变，跳过
     if (configHash === lastAppliedConfigHashRef.current) return;
 
@@ -468,6 +483,12 @@ function App() {
     console.log("[App.tsx] 自动保存 useEffect 触发, theme=", theme, "hasLoaded=", hasLoadedConfigRef.current, "epoch=", configLoadEpochRef.current, "lastSeen=", lastSeenConfigEpochRef.current);
     if (!hasLoadedConfigRef.current) return;
     if (status === "recording" || status === "transcribing") return;
+    // 外部配置更新（托盘切换等）触发的 setState，跳过自动保存以防循环
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
+      console.log("[App.tsx] 跳过外部配置更新触发的自动保存");
+      return;
+    }
     // 配置加载后的首次变化由 loadConfig 触发，跳过保存
     if (configLoadEpochRef.current !== lastSeenConfigEpochRef.current) {
       lastSeenConfigEpochRef.current = configLoadEpochRef.current;

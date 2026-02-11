@@ -194,7 +194,11 @@ export function RightPanel({
               variant="orange"
             />
           </div>
-          {!llmConfig.shared.api_key && (enablePostProcess || enableDictionaryEnhancement) && (
+          {(() => {
+            const pid = llmConfig.shared.polishing_provider_id || llmConfig.shared.default_provider_id;
+            const provider = llmConfig.shared.providers?.find(p => p.id === pid);
+            return !provider?.api_key && !llmConfig.shared.api_key;
+          })() && (enablePostProcess || enableDictionaryEnhancement) && (
             <div className="mt-3 text-[10px] font-bold text-amber-600">
               LLM API Key 未配置，请到 Presets 中设置
             </div>
