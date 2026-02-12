@@ -9,6 +9,7 @@ import type {
   AsrConfig,
   AssistantConfig,
   DictionaryEntry,
+  DualHotkeyConfig,
   HistoryRecord,
   LearningConfig,
   LlmConfig,
@@ -51,6 +52,7 @@ export type UseTauriEventListenersParams = {
   setTheme?: React.Dispatch<React.SetStateAction<string>>;
   setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
   setDictionary?: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
+  setDualHotkeyConfig?: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
   setBuiltinDictionaryDomains?: React.Dispatch<React.SetStateAction<string[]>>;
   onExternalConfigUpdated?: (config: AppConfig) => void;
 
@@ -88,6 +90,7 @@ export function useTauriEventListeners({
   setTheme,
   setCloseAction,
   setDictionary,
+  setDualHotkeyConfig,
   setBuiltinDictionaryDomains,
   onExternalConfigUpdated,
   setHistory,
@@ -248,6 +251,10 @@ export function useTauriEventListeners({
           setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
           setTheme?.(config.theme || "light");
 
+          if (config.dual_hotkey_config) {
+            setDualHotkeyConfig?.(config.dual_hotkey_config);
+          }
+
           const nextCloseAction = config.close_action === "close" || config.close_action === "minimize"
             ? config.close_action
             : null;
@@ -324,6 +331,7 @@ export function useTauriEventListeners({
     setTheme,
     setCloseAction,
     setDictionary,
+    setDualHotkeyConfig,
     setBuiltinDictionaryDomains,
     onExternalConfigUpdated,
     setShowCloseDialog,

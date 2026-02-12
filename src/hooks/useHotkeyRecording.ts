@@ -31,6 +31,13 @@ export function useHotkeyRecording({
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const wasHotkeyServiceActiveRef = useRef<boolean | null>(null);
 
+  // 用 ref 持有回调和配置，避免它们的引用变化导致 keydown/keyup useEffect 重建
+  // （重建会清空 pressedKeysSet，导致录制失败）
+  const onSaveConfigRef = useRef(onSaveConfig);
+  useEffect(() => { onSaveConfigRef.current = onSaveConfig; }, [onSaveConfig]);
+  const dualHotkeyConfigRef = useRef(dualHotkeyConfig);
+  useEffect(() => { dualHotkeyConfigRef.current = dualHotkeyConfig; }, [dualHotkeyConfig]);
+
   useEffect(() => {
     if (!isRecordingHotkey) return;
 
@@ -96,7 +103,8 @@ export function useHotkeyRecording({
         return;
       }
 
-      const nextDualHotkeyConfig: DualHotkeyConfig = { ...dualHotkeyConfig };
+      const currentConfig = dualHotkeyConfigRef.current;
+      const nextDualHotkeyConfig: DualHotkeyConfig = { ...currentConfig };
       if (recordingMode === "dictation") {
         nextDualHotkeyConfig.dictation = {
           ...nextDualHotkeyConfig.dictation,
@@ -117,7 +125,7 @@ export function useHotkeyRecording({
       setDualHotkeyConfig(nextDualHotkeyConfig);
       setHotkeyError(null);
 
-      void onSaveConfig({ dualHotkeyConfig: nextDualHotkeyConfig }).catch(() => {
+      void onSaveConfigRef.current({ dualHotkeyConfig: nextDualHotkeyConfig }).catch(() => {
         setHotkeyError("保存热键配置失败");
         window.setTimeout(() => setHotkeyError(null), 3000);
       });
@@ -135,8 +143,6 @@ export function useHotkeyRecording({
   }, [
     isRecordingHotkey,
     recordingMode,
-    onSaveConfig,
-    dualHotkeyConfig,
     setDualHotkeyConfig,
   ]);
 
@@ -173,7 +179,7 @@ export function useHotkeyRecording({
         };
       }
 
-      void onSaveConfig({ dualHotkeyConfig: next }).catch(() => {
+      void onSaveConfigRef.current({ dualHotkeyConfig: next }).catch(() => {
         setHotkeyError("保存热键配置失败");
         window.setTimeout(() => setHotkeyError(null), 3000);
       });

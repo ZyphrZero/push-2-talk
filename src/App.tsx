@@ -282,6 +282,7 @@ function App() {
     setTheme,
     setCloseAction,
     setDictionary,
+    setDualHotkeyConfig,
     setBuiltinDictionaryDomains,
     onExternalConfigUpdated: handleExternalConfigUpdated,
     setHistory,
