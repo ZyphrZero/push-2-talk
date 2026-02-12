@@ -17,9 +17,11 @@ import {
   DEFAULT_DUAL_HOTKEY_CONFIG,
   DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  FALLBACK_ASR_PROVIDER,
+  VALID_ASR_PROVIDERS,
   normalizeLearningConfig,
 } from "../constants";
-import { isAsrConfigValid } from "../utils";
+import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
 import { getBuiltinWordsForDomains, normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
 
@@ -157,6 +159,7 @@ export type UseAppServiceControllerParams = {
   setShowCloseDialog: React.Dispatch<React.SetStateAction<boolean>>;
 
   setShowSuccessToast: React.Dispatch<React.SetStateAction<boolean>>;
+  showToast?: (message: string, durationMs?: number) => void;
 
   /** 即时保存前的回调，用于取消 debounce timer */
   onBeforeImmediateSave?: () => void;
@@ -202,6 +205,7 @@ export function useAppServiceController({
   setRememberChoice,
   setShowCloseDialog,
   setShowSuccessToast,
+  showToast,
   onBeforeImmediateSave,
 }: UseAppServiceControllerParams) {
   const flashSuccessToast = useCallback(() => {
@@ -386,11 +390,9 @@ export function useAppServiceController({
             const parsedCache = JSON.parse(savedCache);
 
             const activeProvider =
-              parsedCache.active_provider === 'qwen' ||
-                parsedCache.active_provider === 'doubao' ||
-                parsedCache.active_provider === 'siliconflow'
+              VALID_ASR_PROVIDERS.includes(parsedCache.active_provider)
                 ? parsedCache.active_provider
-                : 'qwen';
+                : FALLBACK_ASR_PROVIDER;
 
             const migratedAsrConfig: AsrConfig = {
               credentials: {
@@ -462,11 +464,28 @@ export function useAppServiceController({
       setApiKey(config.dashscope_api_key);
       setFallbackApiKey(config.siliconflow_api_key || "");
 
-      if (config.asr_config) {
-        setAsrConfig({
-          ...config.asr_config,
-          language_mode: config.asr_config.language_mode === 'zh' ? 'zh' : 'auto',
-        });
+      const loadedAsrConfig: AsrConfig | null = config.asr_config
+        ? {
+            ...config.asr_config,
+            language_mode: config.asr_config.language_mode === "zh" ? "zh" : "auto",
+          }
+        : null;
+
+      let effectiveAsrConfig = loadedAsrConfig;
+      let asrDidFallback = false;
+      if (effectiveAsrConfig) {
+        const normalized = normalizeAsrConfigWithFallback(effectiveAsrConfig);
+        effectiveAsrConfig = normalized.config;
+        asrDidFallback = normalized.didFallback;
+        if (asrDidFallback) {
+          const fallbackName = getAsrProviderDisplayName(FALLBACK_ASR_PROVIDER);
+          const fallbackMessage = `ASR Key 缺失，已自动切换至${fallbackName}`;
+          console.warn(`[配置修复] ${fallbackMessage}`);
+          showToast?.(fallbackMessage, 2600);
+        }
+      }
+      if (effectiveAsrConfig) {
+        setAsrConfig(effectiveAsrConfig);
       }
 
       setUseRealtime(config.use_realtime_asr ?? false);
@@ -508,7 +527,10 @@ export function useAppServiceController({
         setDualHotkeyConfig(DEFAULT_DUAL_HOTKEY_CONFIG);
       }
 
-      setLearningConfig(normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG));
+      const loadedLearningConfig = normalizeLearningConfig(
+        config.learning_config || DEFAULT_LEARNING_CONFIG,
+      );
+      setLearningConfig(loadedLearningConfig);
 
       if (config.close_action) {
         setCloseAction(config.close_action);
@@ -546,7 +568,6 @@ export function useAppServiceController({
       );
       setBuiltinDictionaryDomains(loadedBuiltinDictionaryDomains);
 
-      const loadedAsrConfig = config.asr_config || null;
       const loadedDualHotkeyConfig = config.dual_hotkey_config || {
         dictation:
           config.hotkey_config ||
@@ -554,7 +575,7 @@ export function useAppServiceController({
         assistant: { keys: ["alt_left", "space"] as HotkeyKey[] },
       };
 
-      if (loadedAsrConfig && isAsrConfigValid(loadedAsrConfig)) {
+      if (effectiveAsrConfig && isAsrConfigValid(effectiveAsrConfig)) {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
         await startApp({
           apiKey: config.dashscope_api_key,
@@ -565,7 +586,7 @@ export function useAppServiceController({
           llmConfig: loadedLlmConfig,
           smartCommandConfig: null,
           assistantConfig: loadedAssistantConfig,
-          asrConfig: loadedAsrConfig,
+          asrConfig: effectiveAsrConfig,
           dualHotkeyConfig: loadedDualHotkeyConfig,
           enableMuteOtherApps: config.enable_mute_other_apps ?? false,
           dictionary: buildRuntimeDictionary(
@@ -576,6 +597,31 @@ export function useAppServiceController({
         });
         setStatus("running");
         setError(null);
+
+        // 回退后持久化修正后的配置，避免下次启动重复回退
+        if (asrDidFallback) {
+          try {
+            await saveConfigThroughGateway({
+              apiKey: effectiveAsrConfig.credentials.qwen_api_key,
+              fallbackApiKey: effectiveAsrConfig.credentials.sensevoice_api_key,
+              useRealtime: config.use_realtime_asr ?? true,
+              enablePostProcess: config.enable_llm_post_process ?? false,
+              enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
+              llmConfig: loadedLlmConfig,
+              assistantConfig: loadedAssistantConfig,
+              asrConfig: effectiveAsrConfig,
+              closeAction: config.close_action ?? null,
+              dualHotkeyConfig: loadedDualHotkeyConfig,
+              learningConfig: loadedLearningConfig,
+              enableMuteOtherApps: config.enable_mute_other_apps ?? false,
+              dictionaryEntries: loadedDictionary,
+              builtinDictionaryDomains: loadedBuiltinDictionaryDomains,
+              theme: config.theme || "light",
+            });
+          } catch (err) {
+            console.warn("[配置修复] 回退配置持久化失败:", err);
+          }
+        }
       }
     } catch (err) {
       console.error("加载配置失败:", err);
@@ -600,6 +646,7 @@ export function useAppServiceController({
     setUseRealtime,
     startApp,
     saveConfigThroughGateway,
+    showToast,
   ]);
 
   const handleSaveConfig = useCallback(async () => {
@@ -742,12 +789,23 @@ export function useAppServiceController({
   const handleStartStop = useCallback(async () => {
     try {
       if (status === "idle") {
-        if (!isAsrConfigValid(asrConfig)) {
+        const normalized = normalizeAsrConfigWithFallback(asrConfig);
+        if (!isAsrConfigValid(normalized.config)) {
           setError("请先配置 ASR API Key");
           return;
         }
+        const effectiveConfig = normalized.config;
+        if (normalized.didFallback) {
+          const fallbackName = getAsrProviderDisplayName(FALLBACK_ASR_PROVIDER);
+          const fallbackMessage = `ASR Key 缺失，已自动切换至${fallbackName}`;
+          setAsrConfig(effectiveConfig);
+          console.warn(`[配置修复] ${fallbackMessage}`);
+          showToast?.(fallbackMessage, 2600);
+        }
 
-        const resolved = await saveConfigThroughGateway();
+        const resolved = await saveConfigThroughGateway({
+          asrConfig: effectiveConfig,
+        });
 
         await startApp({
           apiKey: resolved.apiKey,
@@ -778,8 +836,10 @@ export function useAppServiceController({
   }, [
     asrConfig,
     saveConfigThroughGateway,
+    setAsrConfig,
     setError,
     setStatus,
+    showToast,
     startApp,
     status,
     stopApp,

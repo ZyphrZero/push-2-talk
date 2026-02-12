@@ -138,9 +138,15 @@ export const DEFAULT_DUAL_HOTKEY_CONFIG = {
   assistant: { keys: ['alt_left', 'space'] as HotkeyKey[] }
 };
 
+// Key 缺失时自动回退的 ASR Provider
+export const FALLBACK_ASR_PROVIDER = 'doubao_ime' as AsrProvider;
+
+// 合法的 ASR Provider 列表（用于 localStorage 迁移校验等）
+export const VALID_ASR_PROVIDERS: AsrProvider[] = ['qwen', 'doubao', 'doubao_ime', 'siliconflow'];
+
 // 默认 ASR 缓存
 export const DEFAULT_ASR_CACHE = {
-  active_provider: 'qwen' as AsrProvider,
+  active_provider: 'doubao_ime' as AsrProvider,
   qwen: { api_key: '' },
   doubao: { app_id: '', access_token: '' },
   doubao_ime: { device_id: '', token: '', cdid: '' },

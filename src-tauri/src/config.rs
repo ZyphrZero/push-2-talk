@@ -484,7 +484,7 @@ pub enum AsrProvider {
 
 impl Default for AsrProvider {
     fn default() -> Self {
-        AsrProvider::Qwen
+        AsrProvider::DoubaoIme
     }
 }
 
@@ -520,7 +520,7 @@ pub struct AsrSelection {
 impl Default for AsrSelection {
     fn default() -> Self {
         Self {
-            active_provider: AsrProvider::Qwen,
+            active_provider: AsrProvider::DoubaoIme,
             enable_fallback: false,
             fallback_provider: None,
         }

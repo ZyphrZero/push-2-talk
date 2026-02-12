@@ -75,7 +75,7 @@ function App() {
       doubao_ime_cdid: '',
     },
     selection: {
-      active_provider: 'qwen',
+      active_provider: 'doubao_ime',
       enable_fallback: false,
       fallback_provider: null,
     },
@@ -359,6 +359,7 @@ function App() {
     setRememberChoice,
     setShowCloseDialog,
     setShowSuccessToast,
+    showToast,
     onBeforeImmediateSave: cancelAutoSaveDebounce,
   });
 
