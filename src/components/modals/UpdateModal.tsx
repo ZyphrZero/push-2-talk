@@ -54,7 +54,9 @@ export function UpdateModal({
           {updateInfo.notes && (
             <div className="p-4 bg-[var(--panel)] border border-[var(--stone)] rounded-2xl">
               <h4 className="text-xs font-bold text-[var(--stone-dark)] uppercase tracking-widest mb-2">更新内容</h4>
-              <p className="text-sm text-[var(--ink)] whitespace-pre-wrap leading-relaxed">{updateInfo.notes}</p>
+              <div className="max-h-64 overflow-y-auto pr-1">
+                <p className="text-sm text-[var(--ink)] whitespace-pre-wrap leading-relaxed">{updateInfo.notes}</p>
+              </div>
             </div>
           )}
 

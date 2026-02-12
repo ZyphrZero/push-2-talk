@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
+import { getVersion } from "@tauri-apps/api/app";
 import type { UpdateStatus } from "../types";
+import { fetchAccumulatedNotes } from "../utils/releaseNotes";
 
 export type UpdaterInfo = { version: string; notes?: string };
 
@@ -35,11 +37,29 @@ export function useUpdater({ onToast, onError }: UseUpdaterParams) {
         setUpdateStatus("checking");
         const update = await check();
         if (update) {
+          const latestNotes = update.body || undefined;
           setUpdateInfo({
             version: update.version,
-            notes: update.body || undefined,
+            notes: latestNotes,
           });
           setUpdateStatus("available");
+
+          // 异步获取累积 release notes（跨版本更新时展示所有中间版本）
+          getVersion()
+            .then((currentVersion) =>
+              fetchAccumulatedNotes(currentVersion, update.version),
+            )
+            .then((accumulated) => {
+              if (accumulated) {
+                setUpdateInfo((prev) =>
+                  prev ? { ...prev, notes: accumulated } : prev,
+                );
+              }
+            })
+            .catch(() => {
+              /* fallback: 保留原始 notes */
+            });
+
           if (openModal) {
             setShowUpdateModal(true);
           } else {
