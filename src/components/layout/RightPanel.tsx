@@ -66,8 +66,11 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
 
-  const { saveImmediately, syncStatus, isExternalSyncing } = useConfigSave();
-  const effectiveSyncStatus = isExternalSyncing ? "syncing" : syncStatus;
+  const { saveImmediately, isExternalSyncing } = useConfigSave();
+  // 只在外部配置同步时传入状态，用户本地操作让各组件自行管理 internalStatus
+  const externalOnlySyncStatus = isExternalSyncing
+    ? ("syncing" as const)
+    : undefined;
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -95,7 +98,7 @@ export function RightPanel({
             });
           }}
           disabled={isRunning}
-          syncStatus={effectiveSyncStatus}
+          syncStatus={externalOnlySyncStatus}
           options={[
             {
               value: "qwen" as AsrProvider,
@@ -157,7 +160,7 @@ export function RightPanel({
                 await saveImmediately({ enablePostProcess: checked });
               }}
               disabled={isRunning}
-              syncStatus={effectiveSyncStatus}
+              syncStatus={externalOnlySyncStatus}
               size="sm"
               variant="orange"
             />
@@ -193,7 +196,7 @@ export function RightPanel({
                 await saveImmediately({ enableDictionaryEnhancement: checked });
               }}
               disabled={isRunning}
-              syncStatus={effectiveSyncStatus}
+              syncStatus={externalOnlySyncStatus}
               size="sm"
               variant="orange"
             />
@@ -249,7 +252,7 @@ export function RightPanel({
                 await saveImmediately({ useRealtime: checked });
               }}
               disabled={isRunning}
-              syncStatus={effectiveSyncStatus}
+              syncStatus={externalOnlySyncStatus}
               size="sm"
               variant="amber"
             />

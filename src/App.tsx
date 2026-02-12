@@ -26,6 +26,8 @@ import { loadUsageStats } from "./utils";
 import { TopStatusBar } from "./components/layout/TopStatusBar";
 import { Sidebar } from "./components/layout/Sidebar";
 import { RightPanel } from "./components/layout/RightPanel";
+import { GlobalNoticeHost } from "./components/notice/GlobalNoticeHost";
+import { resolveGlobalNotice } from "./utils/globalNotice";
 import { CloseConfirmDialog } from "./components/modals/CloseConfirmDialog";
 import { UpdateModal } from "./components/modals/UpdateModal";
 import { useDictionary } from "./hooks/useDictionary";
@@ -827,6 +829,16 @@ function App() {
         syncWindowSource: syncWindowSnapshot.source,
       }}
     >
+      {/* Floating notice capsule — fixed position, outside document flow */}
+      <GlobalNoticeHost
+        notice={resolveGlobalNotice({
+          syncWindowSource: syncWindowSnapshot.source,
+          syncStatus,
+          updateStatus,
+          updateDownloadProgress: downloadProgress,
+        })}
+      />
+
       <div className="h-screen w-full bg-[var(--paper)] text-[var(--ink)] font-serif flex">
         <Sidebar
           collapsed={sidebarCollapsed}
@@ -842,10 +854,6 @@ function App() {
             recordingTime={recordingTime}
             formatTime={formatTime}
             usageStats={usageStats}
-            syncStatus={syncStatus}
-            updateStatus={updateStatus}
-            updateDownloadProgress={downloadProgress}
-            syncWindowSource={syncWindowSnapshot.source}
           />
 
           <div className="flex-1 min-h-0 flex overflow-hidden">

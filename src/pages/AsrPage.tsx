@@ -22,8 +22,11 @@ export function AsrPage({
   setShowApiKey,
   isRunning,
 }: AsrPageProps) {
-  const { saveImmediately, syncStatus, isExternalSyncing } = useConfigSave();
-  const effectiveSyncStatus = isExternalSyncing ? "syncing" : syncStatus;
+  const { saveImmediately, isExternalSyncing } = useConfigSave();
+  // 只在外部配置同步时传入状态，用户本地操作让各组件自行管理 internalStatus
+  const externalOnlySyncStatus = isExternalSyncing
+    ? ("syncing" as const)
+    : undefined;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -58,7 +61,7 @@ export function AsrPage({
                     },
                   });
                 }}
-                syncStatus={effectiveSyncStatus}
+                syncStatus={externalOnlySyncStatus}
                 disabled={isRunning}
                 options={[
                   { value: "qwen" as AsrProvider, label: ASR_PROVIDERS.qwen.name },
@@ -152,7 +155,7 @@ export function AsrPage({
                     },
                   });
                 }}
-                syncStatus={effectiveSyncStatus}
+                syncStatus={externalOnlySyncStatus}
                 disabled={isRunning}
                 options={[
                   { value: "auto", label: "自动识别（推荐）" },
