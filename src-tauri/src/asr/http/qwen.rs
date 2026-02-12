@@ -17,7 +17,11 @@ fn asr_language_code(language_mode: AsrLanguageMode) -> &'static str {
     }
 }
 
-fn build_request_body(language_mode: AsrLanguageMode, corpus_text: &str, audio_base64: &str) -> serde_json::Value {
+fn build_request_body(
+    language_mode: AsrLanguageMode,
+    corpus_text: &str,
+    audio_base64: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "model": MODEL,
         "input": {

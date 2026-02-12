@@ -1,37 +1,13 @@
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  AsrConfig,
-  AssistantConfig,
-  DictionaryEntry,
-  DualHotkeyConfig,
-  HotkeyKey,
-  HotkeyRecordingMode,
-  LlmConfig,
-} from "../types";
+import type { DualHotkeyConfig, HotkeyKey, HotkeyRecordingMode } from "../types";
 import { isModifierKey, mapDomKeyToHotkeyKey } from "../utils";
 
 export type UseHotkeyRecordingParams = {
-  apiKey: string;
-  fallbackApiKey: string;
-  useRealtime: boolean;
-  enablePostProcess: boolean;
-  llmConfig: LlmConfig;
-  assistantConfig: AssistantConfig;
-  asrConfig: AsrConfig;
-  enableMuteOtherApps: boolean;
-  closeAction: "close" | "minimize" | null;
-  dictionary: DictionaryEntry[];
-  builtinDictionaryDomains: string[];
-
   dualHotkeyConfig: DualHotkeyConfig;
   setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
-
-  /** 保存配置的回调（用于即时保存并重启服务）
-   * @param overrides - 可选的配置覆盖，用于传入最新的状态值
-   */
-  onSaveConfig?: (overrides?: { dualHotkeyConfig?: DualHotkeyConfig }) => Promise<void>;
+  onSaveConfig: (overrides?: { dualHotkeyConfig?: DualHotkeyConfig }) => Promise<void>;
 };
 
 export type UseHotkeyRecordingResult = {
@@ -45,17 +21,6 @@ export type UseHotkeyRecordingResult = {
 };
 
 export function useHotkeyRecording({
-  apiKey,
-  fallbackApiKey,
-  useRealtime,
-  enablePostProcess,
-  llmConfig,
-  assistantConfig,
-  asrConfig,
-  enableMuteOtherApps,
-  closeAction,
-  dictionary,
-  builtinDictionaryDomains,
   dualHotkeyConfig,
   setDualHotkeyConfig,
   onSaveConfig,
@@ -116,17 +81,15 @@ export function useHotkeyRecording({
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      e.preventDefault();
       e.stopPropagation();
-
       if (!hasRecordedKeys || pressedKeysSet.size === 0) return;
 
       const keysArray = Array.from(pressedKeysSet);
-      const hasModifier = keysArray.some((k) => isModifierKey(k));
-      const isFunctionKey = keysArray.every((k) => /^f([1-9]|1[0-2])$/.test(k));
+      const hasModifier = keysArray.some((key) => isModifierKey(key));
+      const isFunctionKey = keysArray.every((key) => /^f([1-9]|1[0-2])$/.test(key));
 
       if (!(hasModifier || isFunctionKey)) {
-        setHotkeyError("必须包含修饰键(Ctrl/Alt/Shift/Win) 或 功能键(F1-F12)");
+        setHotkeyError("必须包含修饰键 Ctrl/Alt/Shift/Win 或功能键 F1-F12");
         window.setTimeout(() => setHotkeyError(null), 3000);
         setIsRecordingHotkey(false);
         setRecordingKeys([]);
@@ -154,32 +117,10 @@ export function useHotkeyRecording({
       setDualHotkeyConfig(nextDualHotkeyConfig);
       setHotkeyError(null);
 
-      // 使用即时保存回调（如果提供）或回退到直接保存
-      if (onSaveConfig) {
-        void onSaveConfig({ dualHotkeyConfig: nextDualHotkeyConfig }).catch(() => {
-          setHotkeyError("保存热键配置失败");
-          window.setTimeout(() => setHotkeyError(null), 3000);
-        });
-      } else {
-        void invoke<string>("save_config", {
-          apiKey,
-          fallbackApiKey,
-          useRealtime,
-          enablePostProcess,
-          llmConfig,
-          smartCommandConfig: null,
-          assistantConfig,
-          asrConfig,
-          dualHotkeyConfig: nextDualHotkeyConfig,
-          enableMuteOtherApps,
-          closeAction,
-          dictionary,
-          builtinDictionaryDomains,
-        }).catch(() => {
-          setHotkeyError("保存热键配置失败");
-          window.setTimeout(() => setHotkeyError(null), 3000);
-        });
-      }
+      void onSaveConfig({ dualHotkeyConfig: nextDualHotkeyConfig }).catch(() => {
+        setHotkeyError("保存热键配置失败");
+        window.setTimeout(() => setHotkeyError(null), 3000);
+      });
 
       setIsRecordingHotkey(false);
       setRecordingKeys([]);
@@ -194,17 +135,7 @@ export function useHotkeyRecording({
   }, [
     isRecordingHotkey,
     recordingMode,
-    apiKey,
-    fallbackApiKey,
-    useRealtime,
-    enablePostProcess,
-    llmConfig,
-    assistantConfig,
-    asrConfig,
-    enableMuteOtherApps,
-    closeAction,
-    dictionary,
-    builtinDictionaryDomains,
+    onSaveConfig,
     dualHotkeyConfig,
     setDualHotkeyConfig,
   ]);
@@ -242,32 +173,10 @@ export function useHotkeyRecording({
         };
       }
 
-      // 使用即时保存回调（如果提供）或回退到直接保存
-      if (onSaveConfig) {
-        void onSaveConfig({ dualHotkeyConfig: next }).catch(() => {
-          setHotkeyError("保存热键配置失败");
-          window.setTimeout(() => setHotkeyError(null), 3000);
-        });
-      } else {
-        void invoke<string>("save_config", {
-          apiKey,
-          fallbackApiKey,
-          useRealtime,
-          enablePostProcess,
-          llmConfig,
-          smartCommandConfig: null,
-          assistantConfig,
-          asrConfig,
-          dualHotkeyConfig: next,
-          enableMuteOtherApps,
-          closeAction,
-          dictionary,
-          builtinDictionaryDomains,
-        }).catch(() => {
-          setHotkeyError("保存热键配置失败");
-          window.setTimeout(() => setHotkeyError(null), 3000);
-        });
-      }
+      void onSaveConfig({ dualHotkeyConfig: next }).catch(() => {
+        setHotkeyError("保存热键配置失败");
+        window.setTimeout(() => setHotkeyError(null), 3000);
+      });
 
       return next;
     });

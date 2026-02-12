@@ -327,8 +327,6 @@ pub fn restore_focus_with_verify(hwnd: isize, max_retries: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     #[cfg(target_os = "windows")]
     fn test_send_ctrl_c() {

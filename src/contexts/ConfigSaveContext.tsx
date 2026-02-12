@@ -13,7 +13,14 @@
  */
 
 import { createContext, useContext } from "react";
-import type { AsrConfig, AssistantConfig, DictionaryEntry, DualHotkeyConfig, LlmConfig } from "../types";
+import type {
+  AsrConfig,
+  AssistantConfig,
+  DictionaryEntry,
+  DualHotkeyConfig,
+  LearningConfig,
+  LlmConfig,
+} from "../types";
 
 export type ConfigSyncStatus = "idle" | "syncing" | "success" | "error";
 
@@ -28,8 +35,9 @@ export type ConfigOverrides = {
   assistantConfig?: AssistantConfig;
   asrConfig?: AsrConfig;
   dualHotkeyConfig?: DualHotkeyConfig;
+  learningConfig?: LearningConfig;
   enableMuteOtherApps?: boolean;
-  dictionary?: DictionaryEntry[];
+  dictionaryEntries?: DictionaryEntry[];
   builtinDictionaryDomains?: string[];
   theme?: string;
 };
@@ -43,6 +51,10 @@ export type ConfigSaveContextValue = {
   syncStatus: ConfigSyncStatus;
   /** 是否正在保存（便捷属性） */
   isSaving: boolean;
+  /** 是否处于外部配置同步窗口（如托盘触发 config_updated） */
+  isExternalSyncing: boolean;
+  /** 外部同步窗口来源（无同步窗口时为 null） */
+  syncWindowSource: "initial_load" | "external_config_updated" | null;
 };
 
 export const ConfigSaveContext = createContext<ConfigSaveContextValue | null>(null);

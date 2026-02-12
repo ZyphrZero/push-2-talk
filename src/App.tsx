@@ -11,6 +11,7 @@ import type {
   AsrConfig,
   AssistantConfig,
   DualHotkeyConfig,
+  LearningConfig,
   LlmConfig,
   UsageStats,
 } from "./types";
@@ -18,6 +19,7 @@ import type { AppPage } from "./pages/types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
   DEFAULT_DUAL_HOTKEY_CONFIG,
+  DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
 } from "./constants";
 import { loadUsageStats } from "./utils";
@@ -44,6 +46,11 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { PreferencesPage } from "./pages/PreferencesPage";
 import { HelpPage } from "./pages/HelpPage";
 import { ConfigSaveContext, type ConfigSyncStatus, type ConfigOverrides } from "./contexts/ConfigSaveContext";
+import {
+  createConfigSyncWindowController,
+  scheduleSyncWindowRelease,
+  type ConfigSyncWindowSnapshot,
+} from "./utils/configSyncWindow";
 
 /** 哨兵值：外部配置更新时设置，applyRuntimeConfig effect 据此跳过并重置基准 */
 const EXTERNAL_UPDATE_SENTINEL = "__EXTERNAL_CONFIG_UPDATE__";
@@ -76,6 +83,7 @@ function App() {
   const [useRealtime, setUseRealtime] = useState(false);
   const [enablePostProcess, setEnablePostProcess] = useState(false);
   const [enableDictionaryEnhancement, setEnableDictionaryEnhancement] = useState(false);
+  const [learningConfig, setLearningConfig] = useState<LearningConfig>(DEFAULT_LEARNING_CONFIG);
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(DEFAULT_LLM_CONFIG);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
@@ -151,17 +159,6 @@ function App() {
     hotkeyError,
     resetHotkeyToDefault,
   } = useHotkeyRecording({
-    apiKey,
-    fallbackApiKey,
-    useRealtime,
-    enablePostProcess,
-    llmConfig,
-    assistantConfig,
-    asrConfig,
-    enableMuteOtherApps,
-    closeAction,
-    dictionary,
-    builtinDictionaryDomains,
     dualHotkeyConfig,
     setDualHotkeyConfig,
     onSaveConfig: async (overrides) => {
@@ -174,21 +171,54 @@ function App() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const hasCheckedUpdateOnStartup = useRef(false);
   const hasLoadedConfigRef = useRef(false);
-  // 配置加载纪元：每次 loadConfig 后递增，用于跳过 loadConfig 触发的自动保存
-  const configLoadEpochRef = useRef(0);
-  const lastSeenConfigEpochRef = useRef(0);
   const autoSaveTimerRef = useRef<number | null>(null);
-  const skipNextAutoSaveRef = useRef(false);
+  const configSyncWindowControllerRef = useRef(createConfigSyncWindowController());
+  const [syncWindowSnapshot, setSyncWindowSnapshot] = useState<ConfigSyncWindowSnapshot>(
+    () => configSyncWindowControllerRef.current.snapshot(),
+  );
+
+  const syncWindowSnapshotRef = useRef(syncWindowSnapshot);
+  useEffect(() => {
+    syncWindowSnapshotRef.current = syncWindowSnapshot;
+  }, [syncWindowSnapshot]);
+
+  const updateSyncWindowSnapshot = useCallback(() => {
+    const nextSnapshot = configSyncWindowControllerRef.current.snapshot();
+    const prevSnapshot = syncWindowSnapshotRef.current;
+
+    if (
+      prevSnapshot.isSuppressed === nextSnapshot.isSuppressed
+      && prevSnapshot.source === nextSnapshot.source
+      && prevSnapshot.isExternalSyncing === nextSnapshot.isExternalSyncing
+    ) {
+      return;
+    }
+
+    syncWindowSnapshotRef.current = nextSnapshot;
+    setSyncWindowSnapshot(nextSnapshot);
+  }, []);
+  const releaseConfigSyncWindow = useCallback((token: number) => {
+    scheduleSyncWindowRelease({
+      token,
+      complete: (releasedToken) => {
+        configSyncWindowControllerRef.current.complete(releasedToken);
+        updateSyncWindowSnapshot();
+      },
+    });
+  }, [updateSyncWindowSnapshot]);
+
   const handleExternalConfigUpdated = useCallback((_config: AppConfig) => {
     if (autoSaveTimerRef.current) {
       window.clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
-    skipNextAutoSaveRef.current = true;
+    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
+    updateSyncWindowSnapshot();
     // 标记 applyRuntimeConfig 基准需要重置，防止外部配置触发冗余的后端热更新
     // （后端已经通过 restart_service_with_config 处理过了）
     lastAppliedConfigHashRef.current = EXTERNAL_UPDATE_SENTINEL;
-  }, []);
+    releaseConfigSyncWindow(syncToken);
+  }, [releaseConfigSyncWindow, updateSyncWindowSnapshot]);
   const statusRef = useRef(status);
   useEffect(() => {
     statusRef.current = status;
@@ -245,6 +275,7 @@ function App() {
     setEnableDictionaryEnhancement,
     setLlmConfig,
     setAssistantConfig,
+    setLearningConfig,
     setEnableMuteOtherApps,
     setTheme,
     setCloseAction,
@@ -285,6 +316,7 @@ function App() {
     handleAutostartToggle,
     handleCloseAction,
     applyRuntimeConfig,
+    patchConfigFields,
   } = useAppServiceController({
     setAsrConfig,
     apiKey,
@@ -304,6 +336,8 @@ function App() {
     asrConfig,
     dualHotkeyConfig,
     setDualHotkeyConfig,
+    learningConfig,
+    setLearningConfig,
     dictionary,
     setDictionary,
     builtinDictionaryDomains,
@@ -356,6 +390,85 @@ function App() {
     }
   }, [immediatelySaveConfig]);
 
+  const saveFieldPatchWithStatus = useCallback(async (patch: {
+    learningEnabled?: boolean;
+    theme?: string;
+    enableMuteOtherApps?: boolean;
+    closeAction?: "close" | "minimize" | null;
+  }) => {
+    cancelAutoSaveDebounce();
+    const syncToken = configSyncWindowControllerRef.current.begin("external_config_updated");
+    updateSyncWindowSnapshot();
+
+    if (syncTimeoutRef.current) {
+      window.clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = null;
+    }
+
+    const previousTheme = theme;
+    const previousEnableMuteOtherApps = enableMuteOtherApps;
+    const previousLearningConfig = learningConfig;
+    const previousCloseAction = closeAction;
+
+    if (typeof patch.theme === "string") {
+      setTheme(patch.theme);
+    }
+    if (typeof patch.enableMuteOtherApps === "boolean") {
+      setEnableMuteOtherApps(patch.enableMuteOtherApps);
+    }
+    if (typeof patch.learningEnabled === "boolean") {
+      const nextLearningEnabled = patch.learningEnabled;
+      setLearningConfig((prev) => ({ ...prev, enabled: nextLearningEnabled }));
+    }
+    if (patch.closeAction !== undefined) {
+      setCloseAction(patch.closeAction);
+    }
+
+    setSyncStatus("syncing");
+
+    try {
+      await patchConfigFields(patch);
+      setSyncStatus("success");
+      syncTimeoutRef.current = window.setTimeout(() => {
+        setSyncStatus("idle");
+      }, 1500);
+    } catch (err) {
+      if (typeof patch.theme === "string") {
+        setTheme(previousTheme);
+      }
+      if (typeof patch.enableMuteOtherApps === "boolean") {
+        setEnableMuteOtherApps(previousEnableMuteOtherApps);
+      }
+      if (typeof patch.learningEnabled === "boolean") {
+        setLearningConfig(previousLearningConfig);
+      }
+      if (patch.closeAction !== undefined) {
+        setCloseAction(previousCloseAction);
+      }
+
+      setSyncStatus("error");
+      syncTimeoutRef.current = window.setTimeout(() => {
+        setSyncStatus("idle");
+      }, 2000);
+      throw err;
+    } finally {
+      releaseConfigSyncWindow(syncToken);
+    }
+  }, [
+    theme,
+    enableMuteOtherApps,
+    learningConfig,
+    closeAction,
+    patchConfigFields,
+    setTheme,
+    setEnableMuteOtherApps,
+    setLearningConfig,
+    setCloseAction,
+    cancelAutoSaveDebounce,
+    releaseConfigSyncWindow,
+    updateSyncWindowSnapshot,
+  ]);
+
   // 更新 ref 以便 useHotkeyRecording 可以访问
   useEffect(() => {
     saveImmediatelyRef.current = wrappedSaveImmediately;
@@ -372,24 +485,32 @@ function App() {
     }
   }, [transcript, originalTranscript]);
   useEffect(() => {
+    if (hasLoadedConfigRef.current) return;
+    hasLoadedConfigRef.current = true;
+
     const init = async () => {
       try {
         await new Promise(resolve => setTimeout(resolve, 100));
-        await loadConfig();
-        hasLoadedConfigRef.current = true;
-        configLoadEpochRef.current += 1;
+        const syncToken = configSyncWindowControllerRef.current.begin("initial_load");
+        updateSyncWindowSnapshot();
+        try {
+          await loadConfig();
+        } finally {
+          releaseConfigSyncWindow(syncToken);
+        }
         // 启动时自动检查更新（只执行一次）
         if (!hasCheckedUpdateOnStartup.current) {
           hasCheckedUpdateOnStartup.current = true;
           await checkForUpdates({ openModal: true, silentOnNoUpdate: true, silentOnError: true });
         }
       } catch (err) {
+        hasLoadedConfigRef.current = false;
         console.error("初始化失败:", err);
         setError("应用初始化失败: " + String(err));
       }
     };
     init();
-  }, []);
+  }, [checkForUpdates, loadConfig, releaseConfigSyncWindow]);
   useEffect(() => {
     getVersion().then(v => {
       setCurrentVersion(v);
@@ -480,19 +601,24 @@ function App() {
   // Auto-save config after changes (debounced).
   // While the service is running, this applies changes by restarting the backend.
   useEffect(() => {
-    console.log("[App.tsx] 自动保存 useEffect 触发, theme=", theme, "hasLoaded=", hasLoadedConfigRef.current, "epoch=", configLoadEpochRef.current, "lastSeen=", lastSeenConfigEpochRef.current);
+    console.log(
+      "[App.tsx] 自动保存 useEffect 触发, theme=",
+      theme,
+      "hasLoaded=",
+      hasLoadedConfigRef.current,
+      "syncSuppressed=",
+      configSyncWindowControllerRef.current.isSuppressed(),
+      "syncSource=",
+      configSyncWindowControllerRef.current.currentSource(),
+    );
     if (!hasLoadedConfigRef.current) return;
     if (status === "recording" || status === "transcribing") return;
-    // 外部配置更新（托盘切换等）触发的 setState，跳过自动保存以防循环
-    if (skipNextAutoSaveRef.current) {
-      skipNextAutoSaveRef.current = false;
-      console.log("[App.tsx] 跳过外部配置更新触发的自动保存");
-      return;
-    }
-    // 配置加载后的首次变化由 loadConfig 触发，跳过保存
-    if (configLoadEpochRef.current !== lastSeenConfigEpochRef.current) {
-      lastSeenConfigEpochRef.current = configLoadEpochRef.current;
-      console.log("[App.tsx] 跳过配置加载后的首次保存 (epoch 变化)");
+
+    if (configSyncWindowControllerRef.current.isSuppressed()) {
+      console.log(
+        "[App.tsx] 同步窗口中，跳过自动保存, source=",
+        configSyncWindowControllerRef.current.currentSource(),
+      );
       return;
     }
 
@@ -523,6 +649,7 @@ function App() {
     enableMuteOtherApps,
     closeAction,
     dualHotkeyConfig,
+    learningConfig,
     theme,
   ]);
 
@@ -653,17 +780,20 @@ function App() {
           <PreferencesPage
             status={status}
             theme={theme}
+            learningConfig={learningConfig}
+            setLearningConfig={setLearningConfig}
             setTheme={async (newTheme) => {
               console.log("[App.tsx] setTheme 被调用, newTheme=", newTheme);
-              setTheme(newTheme);
-              await wrappedSaveImmediately({ theme: newTheme });
+              await saveFieldPatchWithStatus({ theme: newTheme });
             }}
             enableAutostart={enableAutostart}
             onToggleAutostart={() => {
               void handleAutostartToggle();
             }}
             enableMuteOtherApps={enableMuteOtherApps}
-            setEnableMuteOtherApps={setEnableMuteOtherApps}
+            onSetEnableMuteOtherApps={async (next) => {
+              await saveFieldPatchWithStatus({ enableMuteOtherApps: next });
+            }}
             updateStatus={updateStatus}
             updateInfo={updateInfo}
             currentVersion={currentVersion}
@@ -674,6 +804,9 @@ function App() {
               void downloadAndInstall();
             }}
             sharedConfig={llmConfig.shared}
+            onSetLearningEnabled={async (enabled) => {
+              await saveFieldPatchWithStatus({ learningEnabled: enabled });
+            }}
             onNavigateToModels={() => setActivePage("models")}
           />
         );
@@ -690,6 +823,8 @@ function App() {
         saveImmediately: wrappedSaveImmediately,
         syncStatus,
         isSaving: syncStatus === "syncing",
+        isExternalSyncing: syncWindowSnapshot.isExternalSyncing,
+        syncWindowSource: syncWindowSnapshot.source,
       }}
     >
       <div className="h-screen w-full bg-[var(--paper)] text-[var(--ink)] font-serif flex">
@@ -707,6 +842,10 @@ function App() {
             recordingTime={recordingTime}
             formatTime={formatTime}
             usageStats={usageStats}
+            syncStatus={syncStatus}
+            updateStatus={updateStatus}
+            updateDownloadProgress={downloadProgress}
+            syncWindowSource={syncWindowSnapshot.source}
           />
 
           <div className="flex-1 min-h-0 flex overflow-hidden">

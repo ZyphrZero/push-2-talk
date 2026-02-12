@@ -161,6 +161,21 @@ export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
   }
 };
 
+export function normalizeLearningConfig(
+  learningConfig: Partial<LearningConfig> | null | undefined,
+): LearningConfig {
+  if (!learningConfig) return DEFAULT_LEARNING_CONFIG;
+
+  return {
+    ...DEFAULT_LEARNING_CONFIG,
+    ...learningConfig,
+    feature_override: {
+      ...DEFAULT_LEARNING_CONFIG.feature_override,
+      ...(learningConfig.feature_override || {}),
+    },
+  };
+}
+
 // 外部链接
 export const EXTERNAL_LINKS = {
   tutorial: "https://ncn18msloi7t.feishu.cn/wiki/NFM3wAcWNi0IGTkUqkVckxWWntb",

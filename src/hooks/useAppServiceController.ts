@@ -9,12 +9,15 @@ import type {
   DictionaryEntry,
   DualHotkeyConfig,
   HotkeyKey,
+  LearningConfig,
   LlmConfig,
 } from "../types";
 import {
   DEFAULT_ASSISTANT_CONFIG,
   DEFAULT_DUAL_HOTKEY_CONFIG,
+  DEFAULT_LEARNING_CONFIG,
   DEFAULT_LLM_CONFIG,
+  normalizeLearningConfig,
 } from "../constants";
 import { isAsrConfigValid } from "../utils";
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
@@ -48,6 +51,52 @@ const buildRuntimeDictionary = (
   return result;
 };
 
+type SaveConfigGatewayOverrides = {
+  apiKey?: string;
+  fallbackApiKey?: string;
+  useRealtime?: boolean;
+  enablePostProcess?: boolean;
+  enableDictionaryEnhancement?: boolean;
+  llmConfig?: LlmConfig;
+  assistantConfig?: AssistantConfig;
+  asrConfig?: AsrConfig;
+  closeAction?: "close" | "minimize" | null;
+  dualHotkeyConfig?: DualHotkeyConfig;
+  learningConfig?: LearningConfig;
+  enableMuteOtherApps?: boolean;
+  dictionaryEntries?: DictionaryEntry[];
+  storageDictionary?: string[];
+  builtinDictionaryDomains?: string[];
+  theme?: string;
+};
+
+type ConfigFieldPatchPayload = {
+  learningEnabled?: boolean;
+  theme?: string;
+  enableMuteOtherApps?: boolean;
+  closeAction?: "close" | "minimize" | null;
+};
+
+type ResolvedSaveConfig = {
+  apiKey: string;
+  fallbackApiKey: string;
+  useRealtime: boolean;
+  enablePostProcess: boolean;
+  enableDictionaryEnhancement: boolean;
+  llmConfig: LlmConfig;
+  assistantConfig: AssistantConfig;
+  asrConfig: AsrConfig;
+  closeAction: "close" | "minimize" | null;
+  dualHotkeyConfig: DualHotkeyConfig;
+  learningConfig: LearningConfig;
+  enableMuteOtherApps: boolean;
+  dictionaryEntries: DictionaryEntry[];
+  storageDictionary: string[];
+  runtimeDictionary: string[];
+  builtinDictionaryDomains: string[];
+  theme: string;
+};
+
 export type UseAppServiceControllerParams = {
   setAsrConfig: React.Dispatch<React.SetStateAction<AsrConfig>>;
 
@@ -76,6 +125,9 @@ export type UseAppServiceControllerParams = {
 
   dualHotkeyConfig: DualHotkeyConfig;
   setDualHotkeyConfig: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
+
+  learningConfig: LearningConfig;
+  setLearningConfig: React.Dispatch<React.SetStateAction<LearningConfig>>;
 
   dictionary: DictionaryEntry[];
   setDictionary: React.Dispatch<React.SetStateAction<DictionaryEntry[]>>;
@@ -129,6 +181,8 @@ export function useAppServiceController({
   asrConfig,
   dualHotkeyConfig,
   setDualHotkeyConfig,
+  learningConfig,
+  setLearningConfig,
   dictionary,
   setDictionary,
   builtinDictionaryDomains,
@@ -211,6 +265,106 @@ export function useAppServiceController({
     [builtinDictionaryDomains, status],
   );
 
+  const resolveSaveConfig = useCallback(
+    (overrides: SaveConfigGatewayOverrides = {}): ResolvedSaveConfig => {
+      const storageDictionaryFromOverrides = overrides.storageDictionary?.filter(
+        (word) => typeof word === "string" && word.trim(),
+      );
+      const dictionaryEntriesFromStorage = storageDictionaryFromOverrides?.map(parseEntry);
+      const finalDictionaryEntries =
+        overrides.dictionaryEntries ?? dictionaryEntriesFromStorage ?? dictionary;
+      const finalBuiltinDictionaryDomains = normalizeBuiltinDictionaryDomains(
+        overrides.builtinDictionaryDomains ?? builtinDictionaryDomains,
+      );
+      const finalStorageDictionary =
+        storageDictionaryFromOverrides ?? entriesToStorageFormat(finalDictionaryEntries);
+      const finalTheme = (overrides.theme ?? theme) || "light";
+      const finalAsrConfig = overrides.asrConfig ?? asrConfig;
+      const finalLearningConfig = normalizeLearningConfig(
+        overrides.learningConfig ?? learningConfig,
+      );
+
+      return {
+        apiKey: finalAsrConfig.credentials.qwen_api_key || overrides.apiKey || apiKey,
+        fallbackApiKey:
+          finalAsrConfig.credentials.sensevoice_api_key
+          || overrides.fallbackApiKey
+          || fallbackApiKey,
+        useRealtime: overrides.useRealtime ?? useRealtime,
+        enablePostProcess: overrides.enablePostProcess ?? enablePostProcess,
+        enableDictionaryEnhancement:
+          overrides.enableDictionaryEnhancement ?? enableDictionaryEnhancement,
+        llmConfig: overrides.llmConfig ?? llmConfig,
+        assistantConfig: overrides.assistantConfig ?? assistantConfig,
+        asrConfig: finalAsrConfig,
+        closeAction: overrides.closeAction ?? closeAction ?? null,
+        dualHotkeyConfig: overrides.dualHotkeyConfig ?? dualHotkeyConfig,
+        learningConfig: finalLearningConfig,
+        enableMuteOtherApps: overrides.enableMuteOtherApps ?? enableMuteOtherApps,
+        dictionaryEntries: finalDictionaryEntries,
+        storageDictionary: finalStorageDictionary,
+        runtimeDictionary: buildRuntimeDictionary(
+          finalDictionaryEntries,
+          finalBuiltinDictionaryDomains,
+        ),
+        builtinDictionaryDomains: finalBuiltinDictionaryDomains,
+        theme: finalTheme,
+      };
+    },
+    [
+      apiKey,
+      fallbackApiKey,
+      useRealtime,
+      enablePostProcess,
+      enableDictionaryEnhancement,
+      llmConfig,
+      assistantConfig,
+      asrConfig,
+      closeAction,
+      dualHotkeyConfig,
+      learningConfig,
+      enableMuteOtherApps,
+      dictionary,
+      builtinDictionaryDomains,
+      theme,
+    ],
+  );
+
+  const saveConfigThroughGateway = useCallback(
+    async (overrides: SaveConfigGatewayOverrides = {}) => {
+      const resolved = resolveSaveConfig(overrides);
+
+      await invoke<string>("save_config", {
+        apiKey: resolved.apiKey,
+        fallbackApiKey: resolved.fallbackApiKey,
+        useRealtime: resolved.useRealtime,
+        enablePostProcess: resolved.enablePostProcess,
+        enableDictionaryEnhancement: resolved.enableDictionaryEnhancement,
+        llmConfig: resolved.llmConfig,
+        smartCommandConfig: null,
+        assistantConfig: resolved.assistantConfig,
+        asrConfig: resolved.asrConfig,
+        closeAction: resolved.closeAction,
+        dualHotkeyConfig: resolved.dualHotkeyConfig,
+        learningConfig: resolved.learningConfig,
+        enableMuteOtherApps: resolved.enableMuteOtherApps,
+        dictionary: resolved.storageDictionary,
+        builtinDictionaryDomains: resolved.builtinDictionaryDomains,
+        theme: resolved.theme,
+      });
+
+      return resolved;
+    },
+    [resolveSaveConfig],
+  );
+
+  const patchConfigFields = useCallback(
+    async (patch: ConfigFieldPatchPayload) => {
+      await invoke<string>("patch_config_fields", { patch });
+    },
+    [],
+  );
+
   const loadConfig = useCallback(async () => {
     try {
       let config = await invoke<AppConfig>("load_config");
@@ -274,23 +428,24 @@ export function useAppServiceController({
               new Set([...(config.dictionary || []), ...localDictionary])
             ).filter((w) => typeof w === "string" && w.trim());
 
-            await invoke("save_config", {
-              apiKey: config.dashscope_api_key || '',
-              fallbackApiKey: config.siliconflow_api_key || '',
+            await saveConfigThroughGateway({
+              apiKey: config.dashscope_api_key || "",
+              fallbackApiKey: config.siliconflow_api_key || "",
               useRealtime: config.use_realtime_asr ?? true,
               enablePostProcess: config.enable_llm_post_process ?? false,
               enableDictionaryEnhancement: config.enable_dictionary_enhancement ?? true,
               llmConfig: config.llm_config || DEFAULT_LLM_CONFIG,
-              smartCommandConfig: null,
               assistantConfig: config.assistant_config || DEFAULT_ASSISTANT_CONFIG,
               asrConfig: migratedAsrConfig,
+              closeAction: config.close_action ?? null,
               dualHotkeyConfig: config.dual_hotkey_config || DEFAULT_DUAL_HOTKEY_CONFIG,
+              learningConfig: config.learning_config || DEFAULT_LEARNING_CONFIG,
               enableMuteOtherApps: config.enable_mute_other_apps ?? false,
-              dictionary: mergedDictionary,
+              storageDictionary: mergedDictionary,
               builtinDictionaryDomains: normalizeBuiltinDictionaryDomains(
                 config.builtin_dictionary_domains || []
               ),
-              theme: config.theme || 'light',
+              theme: config.theme || "light",
             });
 
             console.log('[迁移] 配置已保存到后端，清理 localStorage');
@@ -352,6 +507,8 @@ export function useAppServiceController({
       } else {
         setDualHotkeyConfig(DEFAULT_DUAL_HOTKEY_CONFIG);
       }
+
+      setLearningConfig(normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG));
 
       if (config.close_action) {
         setCloseAction(config.close_action);
@@ -431,6 +588,7 @@ export function useAppServiceController({
     setDictionary,
     setBuiltinDictionaryDomains,
     setDualHotkeyConfig,
+    setLearningConfig,
     setEnableAutostart,
     setEnableMuteOtherApps,
     setEnablePostProcess,
@@ -441,33 +599,14 @@ export function useAppServiceController({
     setError,
     setUseRealtime,
     startApp,
+    saveConfigThroughGateway,
   ]);
 
   const handleSaveConfig = useCallback(async () => {
     try {
-      // 保存时使用存储格式（保留 source 信息）
-      const storageDictionary = entriesToStorageFormat(dictionary);
-      // 运行时使用纯词汇（用于 ASR API）
-      const runtimeDictionary = buildRuntimeDictionary(dictionary, builtinDictionaryDomains);
+      const resolved = await saveConfigThroughGateway();
 
       console.log("[handleSaveConfig] 保存配置, theme=", theme);
-
-      await invoke<string>("save_config", {
-        apiKey,
-        fallbackApiKey,
-        useRealtime,
-        enablePostProcess,
-        enableDictionaryEnhancement,
-        llmConfig,
-        smartCommandConfig: null,
-        assistantConfig,
-        asrConfig,
-        dualHotkeyConfig,
-        enableMuteOtherApps,
-        dictionary: storageDictionary,
-        builtinDictionaryDomains,
-        theme,
-      });
 
       console.log("[handleSaveConfig] 配置已保存到后端");
 
@@ -476,19 +615,19 @@ export function useAppServiceController({
       if (status === "running") {
         await stopApp();
         await startApp({
-          apiKey,
-          fallbackApiKey,
-          useRealtime,
-          enablePostProcess,
-          enableDictionaryEnhancement,
-          llmConfig,
+          apiKey: resolved.apiKey,
+          fallbackApiKey: resolved.fallbackApiKey,
+          useRealtime: resolved.useRealtime,
+          enablePostProcess: resolved.enablePostProcess,
+          enableDictionaryEnhancement: resolved.enableDictionaryEnhancement,
+          llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
-          assistantConfig,
-          asrConfig,
-          dualHotkeyConfig,
-          enableMuteOtherApps,
-          dictionary: runtimeDictionary,
-          theme,
+          assistantConfig: resolved.assistantConfig,
+          asrConfig: resolved.asrConfig,
+          dualHotkeyConfig: resolved.dualHotkeyConfig,
+          enableMuteOtherApps: resolved.enableMuteOtherApps,
+          dictionary: resolved.runtimeDictionary,
+          theme: resolved.theme,
         });
       }
 
@@ -498,21 +637,10 @@ export function useAppServiceController({
       setError(String(err));
     }
   }, [
-    apiKey,
-    fallbackApiKey,
-    useRealtime,
-    enablePostProcess,
-    enableDictionaryEnhancement,
-    llmConfig,
-    assistantConfig,
-    asrConfig,
-    dualHotkeyConfig,
-    enableMuteOtherApps,
-    dictionary,
-    builtinDictionaryDomains,
     theme,
     status,
     flashSuccessToast,
+    saveConfigThroughGateway,
     setError,
     startApp,
     stopApp,
@@ -532,8 +660,9 @@ export function useAppServiceController({
     assistantConfig?: AssistantConfig;
     asrConfig?: AsrConfig;
     dualHotkeyConfig?: DualHotkeyConfig;
+    learningConfig?: LearningConfig;
     enableMuteOtherApps?: boolean;
-    dictionary?: DictionaryEntry[];
+    dictionaryEntries?: DictionaryEntry[];
     builtinDictionaryDomains?: string[];
     theme?: string;
   }) => {
@@ -541,67 +670,43 @@ export function useAppServiceController({
     onBeforeImmediateSave?.();
 
     try {
-      // 合并当前状态和传入的 overrides
-      const finalUseRealtime = overrides?.useRealtime ?? useRealtime;
-      const finalEnablePostProcess = overrides?.enablePostProcess ?? enablePostProcess;
-      const finalEnableDictionaryEnhancement =
-        overrides?.enableDictionaryEnhancement ?? enableDictionaryEnhancement;
-      const finalLlmConfig = overrides?.llmConfig ?? llmConfig;
-      const finalAssistantConfig = overrides?.assistantConfig ?? assistantConfig;
-      const finalAsrConfig = overrides?.asrConfig ?? asrConfig;
-      const finalDualHotkeyConfig = overrides?.dualHotkeyConfig ?? dualHotkeyConfig;
-      const finalEnableMuteOtherApps = overrides?.enableMuteOtherApps ?? enableMuteOtherApps;
-      const finalDictionary = overrides?.dictionary ?? dictionary;
-      const finalBuiltinDictionaryDomains =
-        overrides?.builtinDictionaryDomains ?? builtinDictionaryDomains;
-      const finalTheme = overrides?.theme ?? theme;
-      // 保存时使用存储格式（保留 source 信息）
-      const storageDictionary = entriesToStorageFormat(finalDictionary);
-      // 运行时使用纯词汇（用于 ASR API）
-      const runtimeDictionary = buildRuntimeDictionary(
-        finalDictionary,
-        finalBuiltinDictionaryDomains
-      );
-
-      await invoke<string>("save_config", {
-        apiKey,
-        fallbackApiKey,
-        useRealtime: finalUseRealtime,
-        enablePostProcess: finalEnablePostProcess,
-        enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
-        llmConfig: finalLlmConfig,
-        smartCommandConfig: null,
-        assistantConfig: finalAssistantConfig,
-        asrConfig: finalAsrConfig,
-        dualHotkeyConfig: finalDualHotkeyConfig,
-        enableMuteOtherApps: finalEnableMuteOtherApps,
-        dictionary: storageDictionary,
-        builtinDictionaryDomains: finalBuiltinDictionaryDomains,
-        theme: finalTheme,
+      const resolved = await saveConfigThroughGateway({
+        useRealtime: overrides?.useRealtime,
+        enablePostProcess: overrides?.enablePostProcess,
+        enableDictionaryEnhancement: overrides?.enableDictionaryEnhancement,
+        llmConfig: overrides?.llmConfig,
+        assistantConfig: overrides?.assistantConfig,
+        asrConfig: overrides?.asrConfig,
+        dualHotkeyConfig: overrides?.dualHotkeyConfig,
+        learningConfig: overrides?.learningConfig,
+        enableMuteOtherApps: overrides?.enableMuteOtherApps,
+        dictionaryEntries: overrides?.dictionaryEntries,
+        builtinDictionaryDomains: overrides?.builtinDictionaryDomains,
+        theme: overrides?.theme,
       });
 
-      if (overrides?.dictionary) setDictionary(overrides.dictionary);
+      if (overrides?.dictionaryEntries) setDictionary(resolved.dictionaryEntries);
       if (overrides?.builtinDictionaryDomains) {
-        setBuiltinDictionaryDomains(overrides.builtinDictionaryDomains);
+        setBuiltinDictionaryDomains(resolved.builtinDictionaryDomains);
       }
-      if (overrides?.theme) setTheme(overrides.theme);
+      if (overrides?.theme) setTheme(resolved.theme);
 
       if (status === "running") {
         await stopApp();
         await startApp({
-          apiKey,
-          fallbackApiKey,
-          useRealtime: finalUseRealtime,
-          enablePostProcess: finalEnablePostProcess,
-          enableDictionaryEnhancement: finalEnableDictionaryEnhancement,
-          llmConfig: finalLlmConfig,
+          apiKey: resolved.apiKey,
+          fallbackApiKey: resolved.fallbackApiKey,
+          useRealtime: resolved.useRealtime,
+          enablePostProcess: resolved.enablePostProcess,
+          enableDictionaryEnhancement: resolved.enableDictionaryEnhancement,
+          llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
-          assistantConfig: finalAssistantConfig,
-          asrConfig: finalAsrConfig,
-          dualHotkeyConfig: finalDualHotkeyConfig,
-          enableMuteOtherApps: finalEnableMuteOtherApps,
-          dictionary: runtimeDictionary,
-          theme: finalTheme,
+          assistantConfig: resolved.assistantConfig,
+          asrConfig: resolved.asrConfig,
+          dualHotkeyConfig: resolved.dualHotkeyConfig,
+          enableMuteOtherApps: resolved.enableMuteOtherApps,
+          dictionary: resolved.runtimeDictionary,
+          theme: resolved.theme,
         });
       }
 
@@ -613,24 +718,12 @@ export function useAppServiceController({
     }
   }, [
     onBeforeImmediateSave,
-    apiKey,
-    fallbackApiKey,
-    useRealtime,
-    enablePostProcess,
-    enableDictionaryEnhancement,
-    llmConfig,
-    assistantConfig,
-    asrConfig,
-    dualHotkeyConfig,
-    enableMuteOtherApps,
-    dictionary,
-    builtinDictionaryDomains,
-    theme,
     status,
     setDictionary,
     setBuiltinDictionaryDomains,
     setTheme,
     setError,
+    saveConfigThroughGateway,
     startApp,
     stopApp,
   ]);
@@ -654,43 +747,22 @@ export function useAppServiceController({
           return;
         }
 
-        // 保存时使用存储格式（保留 source 信息）
-        const storageDictionary = entriesToStorageFormat(dictionary);
-        // 运行时使用纯词汇（用于 ASR API）
-        const runtimeDictionary = buildRuntimeDictionary(dictionary, builtinDictionaryDomains);
-
-        await invoke<string>("save_config", {
-          apiKey,
-          fallbackApiKey,
-          useRealtime,
-          enablePostProcess,
-          enableDictionaryEnhancement,
-          llmConfig,
-          smartCommandConfig: null,
-          assistantConfig,
-          asrConfig,
-          closeAction,
-          dualHotkeyConfig,
-          enableMuteOtherApps,
-          dictionary: storageDictionary,
-          builtinDictionaryDomains,
-          theme,
-        });
+        const resolved = await saveConfigThroughGateway();
 
         await startApp({
-          apiKey,
-          fallbackApiKey,
-          useRealtime,
-          enablePostProcess,
-          enableDictionaryEnhancement,
-          llmConfig,
+          apiKey: resolved.apiKey,
+          fallbackApiKey: resolved.fallbackApiKey,
+          useRealtime: resolved.useRealtime,
+          enablePostProcess: resolved.enablePostProcess,
+          enableDictionaryEnhancement: resolved.enableDictionaryEnhancement,
+          llmConfig: resolved.llmConfig,
           smartCommandConfig: null,
-          assistantConfig,
-          asrConfig,
-          dualHotkeyConfig,
-          enableMuteOtherApps,
-          dictionary: runtimeDictionary,
-          theme,
+          assistantConfig: resolved.assistantConfig,
+          asrConfig: resolved.asrConfig,
+          dualHotkeyConfig: resolved.dualHotkeyConfig,
+          enableMuteOtherApps: resolved.enableMuteOtherApps,
+          dictionary: resolved.runtimeDictionary,
+          theme: resolved.theme,
         });
 
         setStatus("running");
@@ -704,24 +776,13 @@ export function useAppServiceController({
       setError(String(err));
     }
   }, [
-    apiKey,
-    assistantConfig,
     asrConfig,
-    closeAction,
-    dictionary,
-    builtinDictionaryDomains,
-    dualHotkeyConfig,
-    enableMuteOtherApps,
-    enablePostProcess,
-    enableDictionaryEnhancement,
-    fallbackApiKey,
-    llmConfig,
+    saveConfigThroughGateway,
     setError,
     setStatus,
     startApp,
     status,
     stopApp,
-    useRealtime,
   ]);
 
   const handleCancelTranscription = useCallback(async () => {
@@ -737,23 +798,7 @@ export function useAppServiceController({
       if (rememberChoice) {
         setCloseAction(action);
         try {
-          await invoke("save_config", {
-            apiKey,
-            fallbackApiKey,
-            useRealtime,
-            enablePostProcess,
-            enableDictionaryEnhancement,
-            llmConfig,
-            smartCommandConfig: null,
-            assistantConfig,
-            asrConfig,
-            closeAction: action,
-            dualHotkeyConfig,
-            enableMuteOtherApps,
-            dictionary: entriesToStorageFormat(dictionary),
-            builtinDictionaryDomains,
-            theme,
-          });
+          await patchConfigFields({ closeAction: action });
         } catch (err) {
           console.error("保存关闭配置失败:", err);
         }
@@ -769,21 +814,11 @@ export function useAppServiceController({
       }
     },
     [
-      apiKey,
-      assistantConfig,
-      asrConfig,
-      dictionary,
-      builtinDictionaryDomains,
-      dualHotkeyConfig,
-      enableMuteOtherApps,
-      enablePostProcess,
-      fallbackApiKey,
-      llmConfig,
       rememberChoice,
+      patchConfigFields,
       setCloseAction,
       setRememberChoice,
       setShowCloseDialog,
-      useRealtime,
     ],
   );
 
@@ -796,5 +831,6 @@ export function useAppServiceController({
     handleCancelTranscription,
     handleCloseAction,
     applyRuntimeConfig,
+    patchConfigFields,
   };
 }

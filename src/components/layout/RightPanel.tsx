@@ -66,7 +66,8 @@ export function RightPanel({
       ? dualHotkeyConfig.dictation.release_mode_keys
       : (["f2"] as HotkeyKey[]);
 
-  const { saveImmediately } = useConfigSave();
+  const { saveImmediately, syncStatus, isExternalSyncing } = useConfigSave();
+  const effectiveSyncStatus = isExternalSyncing ? "syncing" : syncStatus;
 
   return (
     <aside className="flex shrink-0 w-80 h-full min-h-0 bg-[var(--paper)] border-l border-[var(--stone)] flex-col p-5 gap-5 overflow-y-auto custom-scroll font-sans">
@@ -94,6 +95,7 @@ export function RightPanel({
             });
           }}
           disabled={isRunning}
+          syncStatus={effectiveSyncStatus}
           options={[
             {
               value: "qwen" as AsrProvider,
@@ -155,6 +157,7 @@ export function RightPanel({
                 await saveImmediately({ enablePostProcess: checked });
               }}
               disabled={isRunning}
+              syncStatus={effectiveSyncStatus}
               size="sm"
               variant="orange"
             />
@@ -190,6 +193,7 @@ export function RightPanel({
                 await saveImmediately({ enableDictionaryEnhancement: checked });
               }}
               disabled={isRunning}
+              syncStatus={effectiveSyncStatus}
               size="sm"
               variant="orange"
             />
@@ -245,6 +249,7 @@ export function RightPanel({
                 await saveImmediately({ useRealtime: checked });
               }}
               disabled={isRunning}
+              syncStatus={effectiveSyncStatus}
               size="sm"
               variant="amber"
             />

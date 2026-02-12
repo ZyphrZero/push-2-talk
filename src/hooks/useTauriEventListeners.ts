@@ -10,11 +10,12 @@ import type {
   AssistantConfig,
   DictionaryEntry,
   HistoryRecord,
+  LearningConfig,
   LlmConfig,
   TranscriptionResult,
   UsageStats,
 } from "../types";
-import { MAX_HISTORY } from "../constants";
+import { MAX_HISTORY, DEFAULT_LEARNING_CONFIG, normalizeLearningConfig } from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
 import { parseEntry } from "../utils/dictionaryUtils";
 import { normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
@@ -45,6 +46,7 @@ export type UseTauriEventListenersParams = {
   setEnableDictionaryEnhancement?: React.Dispatch<React.SetStateAction<boolean>>;
   setLlmConfig?: React.Dispatch<React.SetStateAction<LlmConfig>>;
   setAssistantConfig?: React.Dispatch<React.SetStateAction<AssistantConfig>>;
+  setLearningConfig?: React.Dispatch<React.SetStateAction<LearningConfig>>;
   setEnableMuteOtherApps?: React.Dispatch<React.SetStateAction<boolean>>;
   setTheme?: React.Dispatch<React.SetStateAction<string>>;
   setCloseAction?: React.Dispatch<React.SetStateAction<"close" | "minimize" | null>>;
@@ -81,6 +83,7 @@ export function useTauriEventListeners({
   setEnableDictionaryEnhancement,
   setLlmConfig,
   setAssistantConfig,
+  setLearningConfig,
   setEnableMuteOtherApps,
   setTheme,
   setCloseAction,
@@ -239,6 +242,9 @@ export function useTauriEventListeners({
           setEnableDictionaryEnhancement?.(config.enable_dictionary_enhancement ?? true);
           setLlmConfig?.(config.llm_config || llmConfigRef.current);
           if (config.assistant_config) setAssistantConfig?.(config.assistant_config);
+          setLearningConfig?.(
+            normalizeLearningConfig(config.learning_config || DEFAULT_LEARNING_CONFIG),
+          );
           setEnableMuteOtherApps?.(config.enable_mute_other_apps ?? false);
           setTheme?.(config.theme || "light");
 
@@ -313,6 +319,7 @@ export function useTauriEventListeners({
     setEnableDictionaryEnhancement,
     setLlmConfig,
     setAssistantConfig,
+    setLearningConfig,
     setEnableMuteOtherApps,
     setTheme,
     setCloseAction,

@@ -22,7 +22,8 @@ export function AsrPage({
   setShowApiKey,
   isRunning,
 }: AsrPageProps) {
-  const { saveImmediately, syncStatus } = useConfigSave();
+  const { saveImmediately, syncStatus, isExternalSyncing } = useConfigSave();
+  const effectiveSyncStatus = isExternalSyncing ? "syncing" : syncStatus;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 font-sans">
@@ -57,7 +58,7 @@ export function AsrPage({
                     },
                   });
                 }}
-                syncStatus={syncStatus}
+                syncStatus={effectiveSyncStatus}
                 disabled={isRunning}
                 options={[
                   { value: "qwen" as AsrProvider, label: ASR_PROVIDERS.qwen.name },
@@ -151,7 +152,7 @@ export function AsrPage({
                     },
                   });
                 }}
-                syncStatus={syncStatus}
+                syncStatus={effectiveSyncStatus}
                 disabled={isRunning}
                 options={[
                   { value: "auto", label: "自动识别（推荐）" },

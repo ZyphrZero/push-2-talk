@@ -1106,7 +1106,9 @@ mod tests {
 
         // @vue/cli 应被某个 span 覆盖（可能是 Path 或 Technical，因含 /）
         assert!(
-            spans.iter().any(|s| s.text.contains("@vue") || s.text.contains("vue/cli")),
+            spans
+                .iter()
+                .any(|s| s.text.contains("@vue") || s.text.contains("vue/cli")),
             "@vue/cli 应被识别为技术片段，实际 spans: {:?}",
             spans
         );
@@ -1120,7 +1122,9 @@ mod tests {
         let spans = detector.detect(text, &tokens);
 
         assert!(
-            spans.iter().any(|s| s.text.contains("@types") || s.text.contains("types/node")),
+            spans
+                .iter()
+                .any(|s| s.text.contains("@types") || s.text.contains("types/node")),
             "@types/node 应被识别为技术片段"
         );
     }

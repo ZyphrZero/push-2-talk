@@ -6,4 +6,5 @@ export * from "./ConfigToggle";
 export * from "./Tooltip";
 export * from "./ThemeSelector";
 export * from "./LlmConnectionConfig";
+export * from "./GlobalNoticeBar";
 

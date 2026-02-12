@@ -1,11 +1,19 @@
 import { Mic, Type } from "lucide-react";
-import type { AppStatus, UsageStats } from "../../types";
+import { GlobalNoticeBar } from "../common";
+import type { ConfigSyncStatus } from "../../contexts/ConfigSaveContext";
+import type { ConfigSyncWindowSource } from "../../utils/configSyncWindow";
+import { resolveGlobalNotice } from "../../utils/globalNotice";
+import type { AppStatus, UpdateStatus, UsageStats } from "../../types";
 
 export type TopStatusBarProps = {
   status: AppStatus;
   recordingTime: number;
   formatTime: (seconds: number) => string;
   usageStats?: UsageStats;
+  syncStatus: ConfigSyncStatus;
+  updateStatus: UpdateStatus;
+  updateDownloadProgress: number;
+  syncWindowSource?: ConfigSyncWindowSource | null;
 };
 
 export function TopStatusBar({
@@ -13,15 +21,40 @@ export function TopStatusBar({
   recordingTime,
   formatTime,
   usageStats,
+  syncStatus,
+  updateStatus,
+  updateDownloadProgress,
+  syncWindowSource = null,
 }: TopStatusBarProps) {
   const isRecording = status === "recording";
   const isTranscribing = status === "transcribing";
   const isPolishing = status === "polishing";
   const isAssistantProcessing = status === "assistant_processing";
   const isProcessing = isTranscribing || isPolishing || isAssistantProcessing;
+  const globalNotice = resolveGlobalNotice({
+    syncWindowSource,
+    syncStatus,
+    updateStatus,
+    updateDownloadProgress,
+  });
 
   return (
-    <div className="px-6 py-3 border-b border-[var(--stone)] flex items-center justify-between bg-[var(--paper)] font-sans">
+    <div className="border-b border-[var(--stone)] bg-[var(--paper)] font-sans">
+      <div
+        className={`overflow-hidden transition-all duration-200 ${
+          globalNotice ? "max-h-10 opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        {globalNotice && (
+          <GlobalNoticeBar
+            message={globalNotice.message}
+            loading={globalNotice.loading}
+            tone={globalNotice.tone}
+          />
+        )}
+      </div>
+
+      <div className="px-6 py-3 flex items-center justify-between">
       <div
         className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-sm font-medium transition-all duration-300 ${
           isRecording
@@ -145,6 +178,7 @@ export function TopStatusBar({
           </button>
         )} */}
 
+      </div>
       </div>
     </div>
   );

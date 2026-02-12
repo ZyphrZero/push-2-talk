@@ -30,7 +30,7 @@ use asr::{
 use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
-use config::AppConfig;
+use config::{AppConfig, CONFIG_LOCK};
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
@@ -201,11 +201,40 @@ fn load_persisted_config() -> Result<AppConfig, String> {
     }
 }
 
-fn save_persisted_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+fn save_persisted_config_without_emit(config: &AppConfig) -> Result<(), String> {
     config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    Ok(())
+}
+
+fn mutate_persisted_config_with_result<R, F>(mutator: F) -> Result<(AppConfig, R), String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<R, String>,
+{
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|e| format!("获取配置锁失败: {}", e))?;
+
+    let mut config = load_persisted_config()?;
+    let result = mutator(&mut config)?;
+    save_persisted_config_without_emit(&config)?;
+
+    Ok((config, result))
+}
+
+fn mutate_persisted_config<F>(mutator: F) -> Result<AppConfig, String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<(), String>,
+{
+    mutate_persisted_config_with_result(|config| {
+        mutator(config)?;
+        Ok(())
+    })
+    .map(|(config, _)| config)
+}
+
+fn emit_config_updated(app: &AppHandle, config: &AppConfig) {
     sync_tray_menu_from_config(app, config);
     let _ = app.emit("config_updated", config);
-    Ok(())
 }
 
 fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
@@ -329,11 +358,13 @@ fn toggle_post_process_from_tray(
     app_handle: &AppHandle,
     post_process_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    // 先从磁盘加载配置，修改后保存，成功后再更新内存状态和菜单（避免 TOCTOU）
-    let mut config = load_persisted_config()?;
-    let new_value = !config.enable_llm_post_process;
-    config.enable_llm_post_process = new_value;
-    save_persisted_config(app_handle, &config)?;
+    let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
+        let new_value = !config.enable_llm_post_process;
+        config.enable_llm_post_process = new_value;
+        Ok(new_value)
+    })?;
+
+    emit_config_updated(app_handle, &updated_config);
 
     // 磁盘保存成功后，再更新内存状态
     {
@@ -355,11 +386,13 @@ fn toggle_dictionary_enhancement_from_tray(
     app_handle: &AppHandle,
     dictionary_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    // 先从磁盘加载配置，修改后保存，成功后再更新内存状态和菜单（避免 TOCTOU）
-    let mut config = load_persisted_config()?;
-    let new_value = !config.enable_dictionary_enhancement;
-    config.enable_dictionary_enhancement = new_value;
-    save_persisted_config(app_handle, &config)?;
+    let (updated_config, new_value) = mutate_persisted_config_with_result(|config| {
+        let new_value = !config.enable_dictionary_enhancement;
+        config.enable_dictionary_enhancement = new_value;
+        Ok(new_value)
+    })?;
+
+    emit_config_updated(app_handle, &updated_config);
 
     // 磁盘保存成功后，再更新内存状态
     {
@@ -411,28 +444,37 @@ async fn switch_asr_provider_from_tray_inner(
     doubao_item: &CheckMenuItem<tauri::Wry>,
     doubao_ime_item: &CheckMenuItem<tauri::Wry>,
 ) -> Result<(), String> {
-    let mut config = load_persisted_config()?;
+    let config = {
+        let _guard = CONFIG_LOCK
+            .lock()
+            .map_err(|e| format!("获取配置锁失败: {}", e))?;
 
-    if !is_asr_provider_configured(&config, &target_provider) {
-        sync_asr_provider_checks(
-            qwen_item,
-            doubao_item,
-            doubao_ime_item,
-            &config.asr_config.selection.active_provider,
-        );
-        return Err(format!(
-            "{} 未配置凭证，无法切换",
-            asr_provider_name(&target_provider)
-        ));
-    }
+        let mut config = load_persisted_config()?;
 
-    if config.asr_config.selection.active_provider == target_provider {
-        sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
-        return Ok(());
-    }
+        if !is_asr_provider_configured(&config, &target_provider) {
+            sync_asr_provider_checks(
+                qwen_item,
+                doubao_item,
+                doubao_ime_item,
+                &config.asr_config.selection.active_provider,
+            );
+            return Err(format!(
+                "{} 未配置凭证，无法切换",
+                asr_provider_name(&target_provider)
+            ));
+        }
 
-    config.asr_config.selection.active_provider = target_provider.clone();
-    save_persisted_config(app_handle, &config)?;
+        if config.asr_config.selection.active_provider == target_provider {
+            sync_asr_provider_checks(qwen_item, doubao_item, doubao_ime_item, &target_provider);
+            return Ok(());
+        }
+
+        config.asr_config.selection.active_provider = target_provider.clone();
+        save_persisted_config_without_emit(&config)?;
+        config
+    };
+
+    emit_config_updated(app_handle, &config);
 
     {
         let state = app_handle.state::<AppState>();
@@ -458,6 +500,39 @@ async fn switch_asr_provider_from_tray_inner(
     Ok(())
 }
 
+fn merge_asr_config_for_save(
+    asr_config: Option<config::AsrConfig>,
+    existing_asr_config: &config::AsrConfig,
+    api_key: &str,
+    fallback_api_key: &str,
+) -> config::AsrConfig {
+    match asr_config {
+        Some(cfg) => cfg,
+        None => {
+            let mut fallback = existing_asr_config.clone();
+
+            if !api_key.is_empty() {
+                fallback.credentials.qwen_api_key = api_key.to_string();
+            }
+
+            if !fallback_api_key.is_empty() {
+                fallback.credentials.sensevoice_api_key = fallback_api_key.to_string();
+            }
+
+            fallback
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ConfigFieldPatch {
+    learning_enabled: Option<bool>,
+    theme: Option<String>,
+    enable_mute_other_apps: Option<bool>,
+    close_action: Option<Option<String>>,
+}
+
 // Tauri Commands
 
 #[tauri::command]
@@ -481,138 +556,222 @@ async fn save_config(
     builtin_dictionary_domains: Option<Vec<String>>,
     theme: Option<String>,
 ) -> Result<String, String> {
-    tracing::info!("保存配置...");
+    let config = mutate_persisted_config_with_result(|existing| {
+        tracing::info!("保存配置...");
 
-    // 某些前端调用只会提交部分字段（例如仅更新热键/词库），这里用旧配置兜底避免意外清空。
-    let existing = AppConfig::load()
-        .map(|(c, _)| c)
-        .unwrap_or_else(|_| AppConfig::new());
+        // 智能合并 llm_config：如果传入的 presets 为空，保留旧值
+        let final_llm_config = match llm_config {
+            Some(mut cfg) if cfg.presets.is_empty() && !existing.llm_config.presets.is_empty() => {
+                tracing::warn!("检测到空 presets，保留旧配置");
+                cfg.presets = existing.llm_config.presets.clone();
+                cfg.active_preset_id = existing.llm_config.active_preset_id.clone();
+                cfg
+            }
+            Some(cfg) => cfg,
+            None => existing.llm_config.clone(),
+        };
 
-    // 智能合并 llm_config：如果传入的 presets 为空，保留旧值
-    let final_llm_config = match llm_config {
-        Some(mut cfg) if cfg.presets.is_empty() && !existing.llm_config.presets.is_empty() => {
-            tracing::warn!("检测到空 presets，保留旧配置");
-            cfg.presets = existing.llm_config.presets;
-            cfg.active_preset_id = existing.llm_config.active_preset_id;
-            cfg
-        }
-        Some(cfg) => cfg,
-        None => existing.llm_config,
-    };
+        // 智能合并 assistant_config：如果传入的配置无效，保留旧值
+        let final_assistant_config = match assistant_config {
+            Some(cfg)
+                if !cfg.is_valid_with_shared(&final_llm_config.shared)
+                    && existing
+                        .assistant_config
+                        .is_valid_with_shared(&final_llm_config.shared) =>
+            {
+                tracing::warn!("检测到无效 assistant_config，保留旧配置");
+                existing.assistant_config.clone()
+            }
+            Some(cfg) => cfg,
+            None => existing.assistant_config.clone(),
+        };
 
-    // 智能合并 assistant_config：如果传入的配置无效，保留旧值
-    let final_assistant_config = match assistant_config {
-        Some(cfg)
-            if !cfg.is_valid_with_shared(&final_llm_config.shared)
-                && existing
-                    .assistant_config
-                    .is_valid_with_shared(&final_llm_config.shared) =>
-        {
-            tracing::warn!("检测到无效 assistant_config，保留旧配置");
-            existing.assistant_config
-        }
-        Some(cfg) => cfg,
-        None => existing.assistant_config,
-    };
+        // 智能合并 dictionary：如果传入空数组，保留旧值
+        let final_dictionary = match dictionary {
+            Some(dict) if dict.is_empty() && !existing.dictionary.is_empty() => {
+                tracing::warn!("检测到空 dictionary，保留旧配置");
+                existing.dictionary.clone()
+            }
+            Some(dict) => {
+                // 前端传入的格式：纯词汇 "word" 或带来源 "word|auto"
+                // 直接使用传入的数组，不再合并（前端已经是完整的词典状态）
+                dict
+            }
+            None => existing.dictionary.clone(),
+        };
 
-    // 智能合并 dictionary：如果传入空数组，保留旧值
-    let final_dictionary = match dictionary {
-        Some(dict) if dict.is_empty() && !existing.dictionary.is_empty() => {
-            tracing::warn!("检测到空 dictionary，保留旧配置");
-            existing.dictionary
-        }
-        Some(dict) => {
-            // 前端传入的格式：纯词汇 "word" 或带来源 "word|auto"
-            // 直接使用传入的数组，不再合并（前端已经是完整的词典状态）
-            dict
-        }
-        None => existing.dictionary,
-    };
+        // 智能合并 dual_hotkey_config：如果传入空 keys，保留旧值
+        let final_dual_hotkey_config = match dual_hotkey_config {
+            Some(cfg) if cfg.dictation.keys.is_empty() || cfg.assistant.keys.is_empty() => {
+                tracing::warn!("检测到空快捷键配置，保留旧配置");
+                existing.dual_hotkey_config.clone()
+            }
+            Some(cfg) => cfg,
+            None => existing.dual_hotkey_config.clone(),
+        };
 
-    // 智能合并 dual_hotkey_config：如果传入空 keys，保留旧值
-    let final_dual_hotkey_config = match dual_hotkey_config {
-        Some(cfg) if cfg.dictation.keys.is_empty() || cfg.assistant.keys.is_empty() => {
-            tracing::warn!("检测到空快捷键配置，保留旧配置");
-            existing.dual_hotkey_config
-        }
-        Some(cfg) => cfg,
-        None => existing.dual_hotkey_config,
-    };
+        let final_asr_config = merge_asr_config_for_save(
+            asr_config,
+            &existing.asr_config,
+            &api_key,
+            &fallback_api_key,
+        );
 
-    let has_fallback = !fallback_api_key.is_empty();
-    let config = AppConfig {
-        dashscope_api_key: api_key.clone(),
-        siliconflow_api_key: fallback_api_key.clone(),
-        asr_config: asr_config.unwrap_or_else(|| config::AsrConfig {
-            credentials: config::AsrCredentials {
-                qwen_api_key: api_key,
-                sensevoice_api_key: fallback_api_key,
-                doubao_app_id: String::new(),
-                doubao_access_token: String::new(),
-                doubao_ime_device_id: String::new(),
-                doubao_ime_token: String::new(),
-                doubao_ime_cdid: String::new(),
-            },
-            selection: config::AsrSelection {
-                active_provider: config::AsrProvider::Qwen,
-                enable_fallback: has_fallback,
-                fallback_provider: if has_fallback {
-                    Some(config::AsrProvider::SiliconFlow)
-                } else {
-                    None
-                },
-            },
-            language_mode: config::AsrLanguageMode::Auto,
-        }),
-        use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
-        enable_llm_post_process: enable_post_process.unwrap_or(existing.enable_llm_post_process),
-        enable_dictionary_enhancement: enable_dictionary_enhancement
-            .unwrap_or(existing.enable_dictionary_enhancement),
-        llm_config: final_llm_config,
-        smart_command_config: smart_command_config.unwrap_or(existing.smart_command_config),
-        assistant_config: final_assistant_config,
-        learning_config: learning_config.unwrap_or(existing.learning_config),
-        tnl_config: existing.tnl_config,
-        close_action: close_action.or(existing.close_action),
-        hotkey_config,
-        dual_hotkey_config: final_dual_hotkey_config,
-        transcription_mode: existing.transcription_mode,
-        enable_mute_other_apps: enable_mute_other_apps.unwrap_or(existing.enable_mute_other_apps),
-        dictionary: final_dictionary,
-        builtin_dictionary_domains: builtin_dictionary_domains
-            .unwrap_or(existing.builtin_dictionary_domains),
-        theme: theme.unwrap_or(existing.theme),
-    };
+        *existing = AppConfig {
+            dashscope_api_key: final_asr_config.credentials.qwen_api_key.clone(),
+            siliconflow_api_key: final_asr_config.credentials.sensevoice_api_key.clone(),
+            asr_config: final_asr_config,
+            use_realtime_asr: use_realtime.unwrap_or(existing.use_realtime_asr),
+            enable_llm_post_process: enable_post_process
+                .unwrap_or(existing.enable_llm_post_process),
+            enable_dictionary_enhancement: enable_dictionary_enhancement
+                .unwrap_or(existing.enable_dictionary_enhancement),
+            llm_config: final_llm_config,
+            smart_command_config: smart_command_config
+                .unwrap_or_else(|| existing.smart_command_config.clone()),
+            assistant_config: final_assistant_config,
+            learning_config: learning_config.unwrap_or_else(|| existing.learning_config.clone()),
+            tnl_config: existing.tnl_config.clone(),
+            close_action: close_action.or_else(|| existing.close_action.clone()),
+            hotkey_config: hotkey_config.or_else(|| existing.hotkey_config.clone()),
+            dual_hotkey_config: final_dual_hotkey_config,
+            transcription_mode: existing.transcription_mode,
+            enable_mute_other_apps: enable_mute_other_apps
+                .unwrap_or(existing.enable_mute_other_apps),
+            dictionary: final_dictionary,
+            builtin_dictionary_domains: builtin_dictionary_domains
+                .unwrap_or_else(|| existing.builtin_dictionary_domains.clone()),
+            theme: theme.unwrap_or_else(|| existing.theme.clone()),
+        };
 
-    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+        Ok(())
+    })?
+    .0;
 
-    sync_tray_menu_from_config(&app, &config);
+    emit_config_updated(&app, &config);
 
-    tracing::info!(
-        "[save_config] 配置已保存, theme={}",
-        config.theme
-    );
+    tracing::info!("[save_config] 配置已保存, theme={}", config.theme);
 
     Ok("配置已保存".to_string())
+}
+
+#[cfg(test)]
+mod save_config_merge_tests {
+    use super::*;
+
+    fn build_asr_config(qwen_key: &str, sensevoice_key: &str) -> config::AsrConfig {
+        config::AsrConfig {
+            credentials: config::AsrCredentials {
+                qwen_api_key: qwen_key.to_string(),
+                sensevoice_api_key: sensevoice_key.to_string(),
+                doubao_app_id: "doubao_app".to_string(),
+                doubao_access_token: "doubao_token".to_string(),
+                doubao_ime_device_id: "ime_device".to_string(),
+                doubao_ime_token: "ime_token".to_string(),
+                doubao_ime_cdid: "ime_cdid".to_string(),
+            },
+            selection: config::AsrSelection {
+                active_provider: config::AsrProvider::Doubao,
+                enable_fallback: true,
+                fallback_provider: Some(config::AsrProvider::Qwen),
+            },
+            language_mode: config::AsrLanguageMode::Zh,
+        }
+    }
+
+    #[test]
+    fn should_keep_asr_credentials_when_asr_config_is_provided() {
+        let existing = build_asr_config("existing_qwen", "existing_sensevoice");
+        let incoming = build_asr_config("incoming_qwen", "incoming_sensevoice");
+
+        let merged = merge_asr_config_for_save(
+            Some(incoming.clone()),
+            &existing,
+            "stale_top_level_qwen",
+            "stale_top_level_sensevoice",
+        );
+
+        assert_eq!(
+            merged.credentials.qwen_api_key,
+            incoming.credentials.qwen_api_key
+        );
+        assert_eq!(
+            merged.credentials.sensevoice_api_key,
+            incoming.credentials.sensevoice_api_key
+        );
+        assert_eq!(
+            merged.selection.active_provider,
+            incoming.selection.active_provider
+        );
+        assert_eq!(merged.language_mode, incoming.language_mode);
+    }
+
+    #[test]
+    fn should_only_apply_top_level_keys_when_asr_config_is_missing() {
+        let existing = build_asr_config("existing_qwen", "existing_sensevoice");
+
+        let merged = merge_asr_config_for_save(None, &existing, "", "new_top_level_sensevoice");
+
+        assert_eq!(merged.credentials.qwen_api_key, "existing_qwen");
+        assert_eq!(
+            merged.credentials.sensevoice_api_key,
+            "new_top_level_sensevoice"
+        );
+        assert_eq!(merged.credentials.doubao_app_id, "doubao_app");
+        assert_eq!(
+            merged.selection.active_provider,
+            config::AsrProvider::Doubao
+        );
+    }
 }
 
 #[tauri::command]
 async fn load_config() -> Result<AppConfig, String> {
     tracing::info!("加载配置...");
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|e| format!("获取配置锁失败: {}", e))?;
+    load_persisted_config()
+}
 
-    // 加载配置，如果发生迁移则自动保存
-    match AppConfig::load() {
-        Ok((config, migrated)) => {
-            if migrated {
-                tracing::info!("配置发生迁移，自动保存");
-                if let Err(e) = config.save() {
-                    tracing::error!("保存迁移后的配置失败: {}", e);
+#[tauri::command]
+async fn patch_config_fields(app: AppHandle, patch: ConfigFieldPatch) -> Result<String, String> {
+    let updated_config = mutate_persisted_config(|config| {
+        if let Some(enabled) = patch.learning_enabled {
+            config.learning_config.enabled = enabled;
+        }
+
+        if let Some(theme) = patch.theme {
+            let theme = theme.trim();
+            if matches!(theme, "light" | "dark") {
+                config.theme = theme.to_string();
+            }
+        }
+
+        if let Some(enabled) = patch.enable_mute_other_apps {
+            config.enable_mute_other_apps = enabled;
+        }
+
+        if let Some(close_action_patch) = patch.close_action {
+            match close_action_patch {
+                Some(action) => {
+                    let action = action.trim();
+                    if matches!(action, "close" | "minimize") {
+                        config.close_action = Some(action.to_string());
+                    }
+                }
+                None => {
+                    config.close_action = None;
                 }
             }
-            Ok(config)
         }
-        Err(e) => Err(format!("加载配置失败: {}", e)),
-    }
+
+        Ok(())
+    })?;
+
+    emit_config_updated(&app, &updated_config);
+
+    Ok("配置字段已更新".to_string())
 }
 
 #[tauri::command]
@@ -918,7 +1077,7 @@ async fn handle_doubao_ime_realtime_start(
                         err_text
                     );
                     *doubao_ime_credentials.lock().unwrap() = None;
-                    if let Err(e) = clear_doubao_ime_credentials_from_config().await {
+                    if let Err(e) = clear_doubao_ime_credentials_from_config(&app).await {
                         tracing::error!("清除豆包输入法配置凭据失败: {}", e);
                     }
 
@@ -955,7 +1114,7 @@ async fn handle_doubao_ime_realtime_start(
                         );
                         *doubao_ime_credentials.lock().unwrap() = Some(new_creds.clone());
                         if let Err(e) =
-                            save_doubao_ime_credentials_to_config(new_creds.clone()).await
+                            save_doubao_ime_credentials_to_config(&app, new_creds.clone()).await
                         {
                             tracing::error!("保存豆包输入法凭据到配置文件失败: {}", e);
                         }
@@ -1002,32 +1161,33 @@ async fn handle_doubao_ime_realtime_start(
 }
 
 /// 保存豆包输入法凭据到配置文件
-async fn save_doubao_ime_credentials_to_config(creds: DoubaoImeCredentials) -> anyhow::Result<()> {
-    use config::CONFIG_LOCK;
+async fn save_doubao_ime_credentials_to_config(
+    app: &AppHandle,
+    creds: DoubaoImeCredentials,
+) -> anyhow::Result<()> {
+    let updated_config = mutate_persisted_config(|config| {
+        config.asr_config.credentials.doubao_ime_device_id = creds.device_id;
+        config.asr_config.credentials.doubao_ime_token = creds.token;
+        config.asr_config.credentials.doubao_ime_cdid = creds.cdid;
+        Ok(())
+    })
+    .map_err(anyhow::Error::msg)?;
 
-    let _guard = CONFIG_LOCK.lock().unwrap();
-    let (mut config, _) = config::AppConfig::load()?;
-
-    config.asr_config.credentials.doubao_ime_device_id = creds.device_id;
-    config.asr_config.credentials.doubao_ime_token = creds.token;
-    config.asr_config.credentials.doubao_ime_cdid = creds.cdid;
-
-    config.save()?;
+    emit_config_updated(app, &updated_config);
     tracing::info!("豆包输入法凭据已保存到配置文件");
     Ok(())
 }
 
-async fn clear_doubao_ime_credentials_from_config() -> anyhow::Result<()> {
-    use config::CONFIG_LOCK;
+async fn clear_doubao_ime_credentials_from_config(app: &AppHandle) -> anyhow::Result<()> {
+    let updated_config = mutate_persisted_config(|config| {
+        config.asr_config.credentials.doubao_ime_device_id.clear();
+        config.asr_config.credentials.doubao_ime_token.clear();
+        config.asr_config.credentials.doubao_ime_cdid.clear();
+        Ok(())
+    })
+    .map_err(anyhow::Error::msg)?;
 
-    let _guard = CONFIG_LOCK.lock().unwrap();
-    let (mut config, _) = config::AppConfig::load()?;
-
-    config.asr_config.credentials.doubao_ime_device_id.clear();
-    config.asr_config.credentials.doubao_ime_token.clear();
-    config.asr_config.credentials.doubao_ime_cdid.clear();
-
-    config.save()?;
+    emit_config_updated(app, &updated_config);
     tracing::info!("已清除豆包输入法凭据缓存");
     Ok(())
 }
@@ -1273,12 +1433,11 @@ async fn start_app(
         } else {
             // 旧逻辑回退（基本不会走到这里）
             if !api_key.is_empty() {
-                *state.qwen_client.lock().unwrap() =
-                    Some(QwenASRClient::new(
-                        api_key.clone(),
-                        dict.clone(),
-                        config::AsrLanguageMode::Auto,
-                    ));
+                *state.qwen_client.lock().unwrap() = Some(QwenASRClient::new(
+                    api_key.clone(),
+                    dict.clone(),
+                    config::AsrLanguageMode::Auto,
+                ));
             }
             if !fallback_api_key.is_empty() {
                 *state.sensevoice_client.lock().unwrap() =
@@ -3237,6 +3396,20 @@ async fn set_hotkey_service_active(app_handle: AppHandle, active: bool) -> Resul
     Ok(())
 }
 
+#[tauri::command]
+async fn set_learning_enabled(app: AppHandle, enabled: bool) -> Result<String, String> {
+    patch_config_fields(
+        app,
+        ConfigFieldPatch {
+            learning_enabled: Some(enabled),
+            ..ConfigFieldPatch::default()
+        },
+    )
+    .await?;
+    tracing::info!("自动学习已{}", if enabled { "开启" } else { "关闭" });
+    Ok("ok".to_string())
+}
+
 /// 获取热键调试信息
 #[tauri::command]
 async fn get_hotkey_debug_info(app_handle: AppHandle) -> Result<String, String> {
@@ -3421,28 +3594,17 @@ async fn add_learned_word(
     word: String,
     source: String,
 ) -> Result<(), String> {
-    use crate::config::CONFIG_LOCK;
     use crate::dictionary_utils::{entries_to_words, upsert_entry};
 
     tracing::info!("添加学习词汇: {} (来源: {})", word, source);
-
-    // 使用全局锁保护配置操作，防止并发覆盖
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
-
-    // 加载当前配置
-    let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
-
-    // 添加词条（source: "manual" 或 "auto"）
-    upsert_entry(&mut config.dictionary, &word, &source);
-
-    // 保存配置
-    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    let (updated_config, words) = mutate_persisted_config_with_result(|config| {
+        // 添加词条（source: "manual" 或 "auto"）
+        upsert_entry(&mut config.dictionary, &word, &source);
+        Ok(entries_to_words(&config.dictionary))
+    })?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    let words = entries_to_words(&config.dictionary);
     *state.dictionary.lock().unwrap() = words.clone();
 
     // 更新 ASR 客户端词库
@@ -3453,7 +3615,8 @@ async fn add_learned_word(
         client.update_dictionary(words.clone());
     }
 
-    // 发送事件通知前端刷新词典
+    // 发送事件通知前端刷新配置和词典
+    emit_config_updated(&app_handle, &updated_config);
     app_handle.emit("dictionary_updated", ()).ok();
 
     tracing::info!("词汇 '{}' 已添加到词典", word);
@@ -3465,7 +3628,10 @@ async fn add_learned_word(
 async fn get_dictionary_entries() -> Result<Vec<String>, String> {
     tracing::info!("获取词典条目...");
 
-    let (config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|e| format!("获取配置锁失败: {}", e))?;
+    let config = load_persisted_config()?;
 
     tracing::info!("返回 {} 个词典条目", config.dictionary.len());
     Ok(config.dictionary)
@@ -3477,28 +3643,17 @@ async fn delete_dictionary_entries(
     app_handle: AppHandle,
     words: Vec<String>,
 ) -> Result<(), String> {
-    use crate::config::CONFIG_LOCK;
     use crate::dictionary_utils::{entries_to_words, remove_entries};
 
     tracing::info!("删除词典条目: {:?}", words);
-
-    // 使用全局锁保护配置操作，防止并发覆盖
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|e| format!("获取配置锁失败: {}", e))?;
-
-    // 加载当前配置
-    let (mut config, _) = AppConfig::load().map_err(|e| format!("加载配置失败: {}", e))?;
-
-    // 删除指定词汇（按 word 匹配，不区分来源）
-    remove_entries(&mut config.dictionary, &words);
-
-    // 保存配置
-    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    let (updated_config, dict_words) = mutate_persisted_config_with_result(|config| {
+        // 删除指定词汇（按 word 匹配，不区分来源）
+        remove_entries(&mut config.dictionary, &words);
+        Ok(entries_to_words(&config.dictionary))
+    })?;
 
     // 热更新运行时词库
     let state = app_handle.state::<AppState>();
-    let dict_words = entries_to_words(&config.dictionary);
     *state.dictionary.lock().unwrap() = dict_words.clone();
 
     // 更新 ASR 客户端词库
@@ -3509,7 +3664,8 @@ async fn delete_dictionary_entries(
         client.update_dictionary(dict_words.clone());
     }
 
-    // 发送事件通知前端刷新词典
+    // 发送事件通知前端刷新配置和词典
+    emit_config_updated(&app_handle, &updated_config);
     app_handle.emit("dictionary_updated", ()).ok();
 
     tracing::info!("词典条目删除完成");
@@ -3929,6 +4085,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             save_config,
+            patch_config_fields,
             load_config,
             load_usage_stats,
             start_app,
@@ -3941,6 +4098,7 @@ pub fn run() {
             show_overlay,
             hide_overlay,
             set_autostart,
+            set_learning_enabled,
             get_autostart,
             reset_hotkey_state,
             get_hotkey_service_active,

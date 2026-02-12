@@ -48,6 +48,7 @@ tmpclaude-*
 
 # Docs (plans and drafts)
 docs/
+.ccg/
 
 # Git worktrees
 .worktrees/

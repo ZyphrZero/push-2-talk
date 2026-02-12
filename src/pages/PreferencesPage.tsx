@@ -1,10 +1,10 @@
 import { Download, Power, RefreshCw, SlidersHorizontal, VolumeX, GraduationCap, Settings2, HelpCircle } from "lucide-react";
-import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState } from "react";
 import type { AppStatus, UpdateStatus, LearningConfig, SharedLlmConfig } from "../types";
 import { Toggle, ThemeSelector, LlmConnectionConfig, Tooltip } from "../components/common";
 import { RedDot } from "../components/common/RedDot";
 import { SettingsModal } from "../components/modals/SettingsModal";
+import { normalizeLearningConfig } from "../constants";
 
 export type PreferencesPageProps = {
   status: AppStatus;
@@ -13,7 +13,7 @@ export type PreferencesPageProps = {
   onToggleAutostart: () => void;
 
   enableMuteOtherApps: boolean;
-  setEnableMuteOtherApps: (next: boolean) => void;
+  onSetEnableMuteOtherApps: (next: boolean) => Promise<void>;
 
   theme: string;
   setTheme: (theme: string) => Promise<void>;
@@ -25,6 +25,9 @@ export type PreferencesPageProps = {
   onDownloadAndInstall: () => void;
 
   sharedConfig: SharedLlmConfig;
+  learningConfig: LearningConfig;
+  setLearningConfig: (next: LearningConfig) => void;
+  onSetLearningEnabled: (enabled: boolean) => Promise<void>;
   onNavigateToModels?: () => void;
 };
 
@@ -33,7 +36,7 @@ export function PreferencesPage({
   enableAutostart,
   onToggleAutostart,
   enableMuteOtherApps,
-  setEnableMuteOtherApps,
+  onSetEnableMuteOtherApps,
   theme,
   setTheme,
   updateStatus,
@@ -42,55 +45,32 @@ export function PreferencesPage({
   onCheckUpdate,
   onDownloadAndInstall,
   sharedConfig,
+  learningConfig,
+  setLearningConfig,
+  onSetLearningEnabled,
   onNavigateToModels,
 }: PreferencesPageProps) {
   const canInstallUpdate = updateStatus === "available" || updateStatus === "downloading";
 
   // 自动学习配置状态
-  const [learningEnabled, setLearningEnabled] = useState(false);
-  const [_learningConfig, setLearningConfig] = useState<LearningConfig | null>(null);
-  const [isLoadingLearning, setIsLoadingLearning] = useState(true);
+  const learningEnabled = learningConfig.enabled;
   const [learningConfigModalOpen, setLearningConfigModalOpen] = useState(false);
-
-  // 加载自动学习配置
-  useEffect(() => {
-    const loadLearningConfig = async () => {
-      try {
-        const config = await invoke<{ learning_config: LearningConfig }>("load_config");
-        const lc = config.learning_config;
-        setLearningEnabled(lc?.enabled ?? false);
-        setLearningConfig(lc);
-      } catch (error) {
-        console.error("加载自动学习配置失败:", error);
-      } finally {
-        setIsLoadingLearning(false);
-      }
-    };
-    loadLearningConfig();
-  }, []);
 
   // 切换自动学习开关
   const handleToggleLearning = async () => {
     const newValue = !learningEnabled;
-    setLearningEnabled(newValue);
+    const previousLearningConfig = learningConfig;
+    const updatedLearningConfig = normalizeLearningConfig({
+      ...learningConfig,
+      enabled: newValue,
+    });
+    setLearningConfig(updatedLearningConfig);
 
     try {
-      const config = await invoke<any>("load_config");
-      const updatedLearningConfig = {
-        ...config.learning_config,
-        enabled: newValue,
-      };
-
-      await invoke("save_config", {
-        apiKey: config.dashscope_api_key || config.asr_config?.credentials?.qwen_api_key || "",
-        fallbackApiKey: config.siliconflow_api_key || config.asr_config?.credentials?.sensevoice_api_key || "",
-        learningConfig: updatedLearningConfig,
-      });
-
-      setLearningConfig(updatedLearningConfig);
+      await onSetLearningEnabled(newValue);
     } catch (error) {
       console.error("保存自动学习配置失败:", error);
-      setLearningEnabled(!newValue); // 回滚
+      setLearningConfig(previousLearningConfig); // 回滚
     }
   };
 
@@ -143,7 +123,9 @@ export function PreferencesPage({
           </div>
           <Toggle
             checked={enableMuteOtherApps}
-            onCheckedChange={setEnableMuteOtherApps}
+            onCheckedChange={(next) => {
+              void onSetEnableMuteOtherApps(next);
+            }}
             disabled={status === "recording" || status === "transcribing"}
             size="sm"
             variant="orange"
@@ -189,7 +171,7 @@ export function PreferencesPage({
             <Toggle
               checked={learningEnabled}
               onCheckedChange={handleToggleLearning}
-              disabled={isLoadingLearning || status === "recording" || status === "transcribing"}
+              disabled={status === "recording" || status === "transcribing"}
               size="sm"
               variant="green"
             />
@@ -257,9 +239,7 @@ export function PreferencesPage({
             <div className="text-[11px] text-stone-400 font-semibold">
               {updateStatus === "available" && updateInfo
                 ? `发现新版本 v${updateInfo.version}`
-                : updateStatus === "checking"
-                  ? "正在连接服务器..."
-                  : `当前版本 v${currentVersion}`}
+                : `当前版本 v${currentVersion}`}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -269,8 +249,8 @@ export function PreferencesPage({
                 disabled={updateStatus === "downloading"}
                 className="px-3 py-2 rounded-xl bg-white border border-[var(--stone)] text-stone-700 font-bold hover:border-[rgba(176,174,165,0.75)] transition-colors disabled:opacity-50 flex items-center gap-2"
               >
-                <Download size={14} />
-                {updateStatus === "downloading" ? "下载中..." : "更新"}
+                {updateStatus === "downloading" ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                更新
               </button>
             )}
             <button
