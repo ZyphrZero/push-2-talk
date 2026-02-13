@@ -23,7 +23,12 @@ import {
 } from "../constants";
 import { isAsrConfigValid, normalizeAsrConfigWithFallback, getAsrProviderDisplayName } from "../utils";
 import { entriesToWords, parseEntry, entriesToStorageFormat } from "../utils/dictionaryUtils";
-import { getBuiltinWordsForDomains, normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
+import {
+  fetchBuiltinDomains,
+  getBuiltinWordsForDomains,
+  normalizeBuiltinDictionaryDomains,
+  setBuiltinDomainsSnapshot,
+} from "../utils/builtinDictionary";
 
 const DICTIONARY_STORAGE_KEY = "pushtotalk_dictionary";
 
@@ -372,6 +377,12 @@ export function useAppServiceController({
   const loadConfig = useCallback(async () => {
     try {
       let config = await invoke<AppConfig>("load_config");
+      try {
+        const domains = await fetchBuiltinDomains();
+        setBuiltinDomainsSnapshot(domains);
+      } catch (error) {
+        console.warn("预加载内置词库失败，继续使用当前快照:", error);
+      }
 
       // ========== 迁移逻辑：从 localStorage 迁移到后端 (幂等) ==========
       const backendCreds = config.asr_config?.credentials;

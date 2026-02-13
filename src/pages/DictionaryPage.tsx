@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { SourceBadge } from "../components/learning/SourceBadge";
 import type { DictionaryEntry } from "../types";
 import {
   BUILTIN_DICTIONARY_DOMAINS,
   BUILTIN_DICTIONARY_LIMIT,
+  type BuiltinDictionaryDomain,
+  fetchBuiltinDomains,
   getBuiltinWordsForDomains,
+  setBuiltinDomainsSnapshot,
 } from "../utils/builtinDictionary";
 
 export type DictionaryPageProps = {
@@ -25,6 +28,7 @@ export type DictionaryPageProps = {
   handleBatchDelete: (ids: string[]) => void;
   builtinDictionaryDomains: string[];
   setBuiltinDictionaryDomains: (next: string[]) => void;
+  builtinDictionaryVersion: number;
   isRunning: boolean;
 };
 
@@ -48,6 +52,7 @@ export function DictionaryPage({
   handleBatchDelete,
   builtinDictionaryDomains,
   setBuiltinDictionaryDomains,
+  builtinDictionaryVersion,
   isRunning,
 }: DictionaryPageProps) {
   const [activeTab, setActiveTab] = useState<DictionaryTab>("personal");
@@ -55,6 +60,26 @@ export function DictionaryPage({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const selectionErrorTimeoutRef = useRef<number | null>(null);
+  const [builtinDomains, setBuiltinDomains] = useState<BuiltinDictionaryDomain[]>(
+    [...BUILTIN_DICTIONARY_DOMAINS]
+  );
+  const [builtinLoading, setBuiltinLoading] = useState(false);
+  const [builtinLoadError, setBuiltinLoadError] = useState<string | null>(null);
+
+  const reloadBuiltinDomains = useCallback(async () => {
+    setBuiltinLoading(true);
+    try {
+      const domains = await fetchBuiltinDomains();
+      setBuiltinDomainsSnapshot(domains);
+      setBuiltinDomains(domains);
+      setBuiltinLoadError(null);
+    } catch (error) {
+      console.error("加载内置词库失败:", error);
+      setBuiltinLoadError("加载内置词库失败");
+    } finally {
+      setBuiltinLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -63,6 +88,10 @@ export function DictionaryPage({
       }
     };
   }, []);
+
+  useEffect(() => {
+    void reloadBuiltinDomains();
+  }, [reloadBuiltinDomains, builtinDictionaryVersion]);
 
   const selectedDomainSet = useMemo(
     () => new Set(builtinDictionaryDomains),
@@ -397,7 +426,15 @@ export function DictionaryPage({
               </div>
             )}
 
-            {BUILTIN_DICTIONARY_DOMAINS.length === 0 ? (
+            {builtinLoading ? (
+              <div className="text-center py-8 text-stone-400 text-sm">
+                正在加载内置词库...
+              </div>
+            ) : builtinLoadError ? (
+              <div className="text-center py-8 text-red-500 text-sm">
+                {builtinLoadError}
+              </div>
+            ) : builtinDomains.length === 0 ? (
               <div className="text-center py-8 text-stone-400 text-sm">
                 未加载到内置词库
               </div>
@@ -409,7 +446,7 @@ export function DictionaryPage({
                     领域列表
                   </div>
                   <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                    {BUILTIN_DICTIONARY_DOMAINS.map((domain) => {
+                    {builtinDomains.map((domain) => {
                       const isSelected = selectedDomainSet.has(domain.name);
                       const isDisabled =
                         isRunning ||

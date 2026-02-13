@@ -7,6 +7,7 @@ mod audio_mute_manager;
 mod audio_recorder;
 mod audio_utils;
 mod beep_player;
+mod builtin_dictionary_updater;
 mod clipboard_manager;
 mod config;
 mod dictionary_utils;
@@ -31,6 +32,7 @@ use assistant_processor::AssistantProcessor;
 use audio_mute_manager::AudioMuteManager;
 use audio_recorder::AudioRecorder;
 use config::{AppConfig, CONFIG_LOCK};
+use futures_util::FutureExt;
 use hotkey_service::HotkeyService;
 use llm_post_processor::LlmPostProcessor;
 use openai_client::{ChatOptions, Message, OpenAiClient, OpenAiClientConfig};
@@ -140,7 +142,20 @@ struct AppState {
     usage_stats: Arc<Mutex<UsageStats>>,
     /// 录音开始时间（用于计算录音时长）
     recording_start_instant: Arc<Mutex<Option<std::time::Instant>>>,
+    /// 内置词库原始内容（用于前端动态解析）
+    builtin_hotwords_raw: Arc<Mutex<String>>,
+    /// 内置词库后台更新任务是否已启动（进程级单例）
+    builtin_dictionary_updater_started: Arc<AtomicBool>,
 }
+
+#[derive(Clone, serde::Serialize)]
+struct BuiltinDictionaryUpdatedPayload {
+    endpoint: String,
+    changed: bool,
+    size_bytes: usize,
+}
+
+const BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 struct TrayMenuState {
     post_process_item: CheckMenuItem<tauri::Wry>,
@@ -235,6 +250,116 @@ where
 fn emit_config_updated(app: &AppHandle, config: &AppConfig) {
     sync_tray_menu_from_config(app, config);
     let _ = app.emit("config_updated", config);
+}
+
+fn hotwords_content_changed(current: &str, next: &str) -> bool {
+    current.trim() != next.trim()
+}
+
+fn lock_hotwords_or_recover<'a>(
+    hotwords: &'a Arc<Mutex<String>>,
+) -> std::sync::MutexGuard<'a, String> {
+    match hotwords.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!("内置词库缓存锁已 poisoned，继续使用恢复后的数据");
+            poisoned.into_inner()
+        }
+    }
+}
+
+async fn refresh_builtin_dictionary_once(
+    app_handle: &AppHandle,
+    builtin_hotwords_raw: &Arc<Mutex<String>>,
+) {
+    let (content, endpoint) = match builtin_dictionary_updater::fetch_remote_hotwords().await {
+        Ok(result) => result,
+        Err(err) => {
+            tracing::warn!("拉取内置词库失败: {}", err);
+            return;
+        }
+    };
+
+    let changed_before_persist = {
+        let guard = lock_hotwords_or_recover(builtin_hotwords_raw);
+        hotwords_content_changed(&guard, &content)
+    };
+
+    if !changed_before_persist {
+        tracing::debug!("内置词库内容未变化，跳过更新广播");
+        return;
+    }
+
+    if let Err(err) = builtin_dictionary_updater::save_cache_atomic(&content) {
+        tracing::warn!("保存内置词库缓存失败: {}", err);
+        return;
+    }
+
+    let changed = {
+        let mut guard = lock_hotwords_or_recover(builtin_hotwords_raw);
+        if !hotwords_content_changed(&guard, &content) {
+            false
+        } else {
+            *guard = content.clone();
+            true
+        }
+    };
+
+    if !changed {
+        tracing::debug!("内置词库内存快照已更新，跳过重复广播");
+        return;
+    }
+
+    let payload = BuiltinDictionaryUpdatedPayload {
+        endpoint,
+        changed: true,
+        size_bytes: content.len(),
+    };
+
+    if let Err(err) = app_handle.emit("builtin_dictionary_updated", payload) {
+        tracing::warn!("广播内置词库更新事件失败: {}", err);
+    }
+}
+
+fn start_builtin_dictionary_updater(
+    app_handle: &AppHandle,
+    updater_started: &Arc<AtomicBool>,
+    builtin_hotwords_raw: &Arc<Mutex<String>>,
+) {
+    if updater_started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        tracing::info!("内置词库后台更新任务已启动，跳过重复创建");
+        return;
+    }
+
+    let app_handle = app_handle.clone();
+    let updater_started = Arc::clone(updater_started);
+    let builtin_hotwords_raw = Arc::clone(builtin_hotwords_raw);
+    tauri::async_runtime::spawn(async move {
+        let updater_loop = async {
+            refresh_builtin_dictionary_once(&app_handle, &builtin_hotwords_raw).await;
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                BUILTIN_DICTIONARY_UPDATE_INTERVAL_SECS,
+            ));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                refresh_builtin_dictionary_once(&app_handle, &builtin_hotwords_raw).await;
+            }
+        };
+
+        let run_result = std::panic::AssertUnwindSafe(updater_loop)
+            .catch_unwind()
+            .await;
+        updater_started.store(false, Ordering::SeqCst);
+
+        if run_result.is_err() {
+            tracing::error!("内置词库后台更新任务异常退出，已允许重启");
+        }
+    });
 }
 
 fn asr_provider_name(provider: &config::AsrProvider) -> &'static str {
@@ -732,6 +857,11 @@ async fn load_config() -> Result<AppConfig, String> {
         .lock()
         .map_err(|e| format!("获取配置锁失败: {}", e))?;
     load_persisted_config()
+}
+
+#[tauri::command]
+fn get_builtin_domains_raw(state: tauri::State<'_, AppState>) -> String {
+    lock_hotwords_or_recover(&state.builtin_hotwords_raw).clone()
 }
 
 #[tauri::command]
@@ -3816,6 +3946,9 @@ pub fn run() {
                 tracing::warn!("加载统计数据失败: {}, 使用默认值", e);
                 UsageStats::default()
             });
+            let initial_builtin_hotwords = builtin_dictionary_updater::load_builtin_hotwords();
+            let builtin_hotwords_raw = Arc::new(Mutex::new(initial_builtin_hotwords));
+            let builtin_dictionary_updater_started = Arc::new(AtomicBool::new(false));
 
             let app_state = AppState {
                 audio_recorder: Arc::new(Mutex::new(None)),
@@ -3849,6 +3982,8 @@ pub fn run() {
                 doubao_ime_credentials: Arc::new(Mutex::new(None)),
                 usage_stats: Arc::new(Mutex::new(usage_stats)),
                 recording_start_instant: Arc::new(Mutex::new(None)),
+                builtin_hotwords_raw: Arc::clone(&builtin_hotwords_raw),
+                builtin_dictionary_updater_started: Arc::clone(&builtin_dictionary_updater_started),
             };
 
             let initial_config = load_persisted_config().unwrap_or_else(|e| {
@@ -4074,6 +4209,13 @@ pub fn run() {
                 .build(app)?;
 
             app.manage(app_state);
+            let state = app.state::<AppState>();
+            let app_handle = app.handle().clone();
+            start_builtin_dictionary_updater(
+                &app_handle,
+                &state.builtin_dictionary_updater_started,
+                &state.builtin_hotwords_raw,
+            );
 
             Ok(())
         })
@@ -4087,6 +4229,7 @@ pub fn run() {
             save_config,
             patch_config_fields,
             load_config,
+            get_builtin_domains_raw,
             load_usage_stats,
             start_app,
             stop_app,

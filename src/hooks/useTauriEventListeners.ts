@@ -19,7 +19,11 @@ import type {
 import { MAX_HISTORY, DEFAULT_LEARNING_CONFIG, normalizeLearningConfig } from "../constants";
 import { saveHistory, loadUsageStats } from "../utils";
 import { parseEntry } from "../utils/dictionaryUtils";
-import { normalizeBuiltinDictionaryDomains } from "../utils/builtinDictionary";
+import {
+  fetchBuiltinDomains,
+  normalizeBuiltinDictionaryDomains,
+  setBuiltinDomainsSnapshot,
+} from "../utils/builtinDictionary";
 
 type UnlistenFn = () => void;
 
@@ -55,6 +59,7 @@ export type UseTauriEventListenersParams = {
   setDualHotkeyConfig?: React.Dispatch<React.SetStateAction<DualHotkeyConfig>>;
   setBuiltinDictionaryDomains?: React.Dispatch<React.SetStateAction<string[]>>;
   onExternalConfigUpdated?: (config: AppConfig) => void;
+  onBuiltinDictionaryUpdated?: () => void;
 
   setHistory: React.Dispatch<React.SetStateAction<HistoryRecord[]>>;
   setUsageStats?: React.Dispatch<React.SetStateAction<UsageStats>>;
@@ -93,6 +98,7 @@ export function useTauriEventListeners({
   setDualHotkeyConfig,
   setBuiltinDictionaryDomains,
   onExternalConfigUpdated,
+  onBuiltinDictionaryUpdated,
   setHistory,
   setUsageStats,
   onPolishingFailed,
@@ -124,9 +130,11 @@ export function useTauriEventListeners({
       // 辅助函数：注册监听器并检查取消状态，解决 StrictMode 竞态条件
       const registerListener = async <T>(
         event: string,
-        handler: (payload: T) => void,
+        handler: (payload: T) => void | Promise<void>,
       ): Promise<boolean> => {
-        const unlisten = await listen<T>(event, (e) => handler(e.payload as T));
+        const unlisten = await listen<T>(event, (e) => {
+          void handler(e.payload as T);
+        });
         if (cancelled) {
           unlisten();
           return false;
@@ -275,6 +283,19 @@ export function useTauriEventListeners({
           }
         }))) return;
 
+        if (!(await registerListener("builtin_dictionary_updated", async () => {
+          try {
+            const domains = await fetchBuiltinDomains();
+            setBuiltinDomainsSnapshot(domains);
+            setBuiltinDictionaryDomains?.((prev) =>
+              normalizeBuiltinDictionaryDomains(prev),
+            );
+            onBuiltinDictionaryUpdated?.();
+          } catch (error) {
+            console.error("刷新内置词库快照失败:", error);
+          }
+        }))) return;
+
         // 监听润色失败事件（让用户知道润色尝试过但失败了）
         if (!(await registerListener<string>("polishing_failed", (errorMessage) => {
           console.warn("润色失败:", errorMessage);
@@ -334,6 +355,7 @@ export function useTauriEventListeners({
     setDualHotkeyConfig,
     setBuiltinDictionaryDomains,
     onExternalConfigUpdated,
+    onBuiltinDictionaryUpdated,
     setShowCloseDialog,
     setStatus,
     setTotalTime,

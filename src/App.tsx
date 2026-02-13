@@ -115,6 +115,7 @@ function App() {
     handleBatchDelete,
   } = useDictionary();
   const [builtinDictionaryDomains, setBuiltinDictionaryDomains] = useState<string[]>([]);
+  const [builtinDictionaryVersion, setBuiltinDictionaryVersion] = useState(0);
   const {
     history,
     setHistory,
@@ -225,6 +226,25 @@ function App() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+  const dictionaryRef = useRef(dictionary);
+  useEffect(() => {
+    dictionaryRef.current = dictionary;
+  }, [dictionary]);
+  const applyRuntimeConfigRef = useRef<((updates: {
+    enablePostProcess?: boolean;
+    enableDictionaryEnhancement?: boolean;
+    llmConfig?: LlmConfig;
+    assistantConfig?: AssistantConfig;
+    enableMuteOtherApps?: boolean;
+    dictionary?: typeof dictionary;
+  }) => Promise<boolean>) | null>(null);
+  const handleBuiltinDictionaryUpdated = useCallback(() => {
+    setBuiltinDictionaryVersion((prev) => prev + 1);
+    if (statusRef.current !== "running") return;
+    const applyRuntime = applyRuntimeConfigRef.current;
+    if (!applyRuntime) return;
+    void applyRuntime({ dictionary: dictionaryRef.current });
+  }, []);
 
   const [usageStats, setUsageStats] = useState<UsageStats>({
     totalRecordingMs: 0,
@@ -285,6 +305,7 @@ function App() {
     setDualHotkeyConfig,
     setBuiltinDictionaryDomains,
     onExternalConfigUpdated: handleExternalConfigUpdated,
+    onBuiltinDictionaryUpdated: handleBuiltinDictionaryUpdated,
     setHistory,
     setUsageStats,
     onPolishingFailed: handlePolishingFailed,
@@ -363,6 +384,9 @@ function App() {
     showToast,
     onBeforeImmediateSave: cancelAutoSaveDebounce,
   });
+  useEffect(() => {
+    applyRuntimeConfigRef.current = applyRuntimeConfig;
+  }, [applyRuntimeConfig]);
 
   // 包装 immediatelySaveConfig，添加状态管理
   const wrappedSaveImmediately = useCallback(async (overrides?: ConfigOverrides) => {
@@ -758,6 +782,7 @@ function App() {
             handleBatchDelete={handleBatchDelete}
             builtinDictionaryDomains={builtinDictionaryDomains}
             setBuiltinDictionaryDomains={setBuiltinDictionaryDomains}
+            builtinDictionaryVersion={builtinDictionaryVersion}
             isRunning={isConfigLocked}
           />
         );
