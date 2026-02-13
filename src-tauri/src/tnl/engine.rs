@@ -1061,4 +1061,32 @@ mod tests {
         assert!(!result.changed);
         assert_eq!(result.text, "A 2 B");
     }
+
+    // === Bug 回归测试：常见英文单词不应被词库误替换 ===
+
+    #[test]
+    fn test_windows_not_replaced_by_windsurf() {
+        // 词库中有 "Windsurf" 时，"windows" 不应被替换
+        let engine = TnlEngine::new(vec!["Windsurf".to_string()]);
+
+        let result = engine.normalize("我在用 windows 系统");
+        assert!(
+            !result.text.contains("Windsurf"),
+            "BUG: 'windows' was replaced with 'Windsurf' in: {}",
+            result.text
+        );
+        assert!(result.text.contains("windows"));
+    }
+
+    #[test]
+    fn test_windows_not_replaced_by_windsurf_uppercase() {
+        let engine = TnlEngine::new(vec!["Windsurf".to_string()]);
+
+        let result = engine.normalize("Windows is great");
+        assert!(
+            !result.text.contains("Windsurf"),
+            "BUG: 'Windows' was replaced with 'Windsurf' in: {}",
+            result.text
+        );
+    }
 }

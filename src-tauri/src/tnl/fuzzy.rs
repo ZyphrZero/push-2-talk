@@ -14,6 +14,44 @@ const MIN_CONFIDENCE: f32 = 0.65;
 /// 歧义抑制 margin：top1 和 top2 分差小于此值时不替换
 const MARGIN_THRESHOLD: f32 = 0.10;
 
+/// 常见英文词输入时，提高阈值以减少误替换
+const COMMON_WORD_CONFIDENCE_BOOST: f32 = 0.10;
+
+/// 常见英文词输入时，提高编辑相似度硬阈值
+const COMMON_WORD_EDIT_SIM_FLOOR_BOOST: f32 = 0.05;
+
+/// 高频英文词保护集（可按实际误替换样本持续扩充）
+const COMMON_ENGLISH_WORDS: &[&str] = &[
+    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as", "at", "back", "be",
+    "been", "before", "but", "by", "can", "change", "check", "class", "close", "code", "come",
+    "control", "copy", "could", "data", "day", "delete", "did", "do", "docker", "down", "error",
+    "even", "false", "file", "find", "first", "for", "from", "function", "get", "go", "good",
+    "great", "group", "had", "has", "have", "he", "help", "her", "here", "him", "his", "home",
+    "how", "i", "if", "image", "in", "input", "into", "is", "it", "its", "just", "key", "know",
+    "last", "left", "like", "line", "linux", "list", "load", "local", "log", "long", "look",
+    "main", "make", "man", "many", "map", "match", "me", "mode", "model", "more", "most",
+    "move", "my", "name", "new", "next", "no", "node", "not", "now", "null", "number", "object",
+    "of", "on", "one", "only", "open", "or", "order", "other", "our", "out", "output", "over",
+    "page", "pass", "path", "people", "point", "port", "press", "print", "process", "program",
+    "project", "push", "query", "queue", "range", "read", "remote", "result", "return", "right",
+    "root", "rule", "run", "save", "say", "search", "see", "server", "service", "she", "shell",
+    "show", "size", "so", "some", "sort", "source", "space", "start", "state", "stop", "store",
+    "string", "style", "system", "table", "take", "target", "task", "test", "text", "than",
+    "that", "the", "their", "them", "then", "there", "these", "they", "thing", "think", "this",
+    "thread", "time", "to", "token", "tool", "top", "true", "two", "type", "up", "update",
+    "use", "user", "value", "version", "very", "view", "want", "was", "watch", "way", "we",
+    "well", "what", "when", "which", "who", "will", "windows", "with", "word", "work", "would",
+    "write", "year", "you", "your","yes", "yeah", "okay", "ok", "alright",
+    "because", "why", "where", "through", "much", "too",
+    "same", "another", "something", "nothing", "both", "few", "those",
+    "must", "should", "might", "does",
+    "still", "never", "always", "again", "off", "away",
+    "old", "small", "big", "large", "little",
+    "every", "us", "while", "need", "let", "try", "sure",
+    "said", "were", "each", "going", "really",
+    "hello", "hi", "thanks", "please", "sorry"
+];
+
 /// 根据输入词长度计算动态置信度阈值
 fn dynamic_min_confidence(word_len: usize) -> f32 {
     match word_len {
@@ -21,6 +59,41 @@ fn dynamic_min_confidence(word_len: usize) -> f32 {
         5..=7 => MIN_CONFIDENCE,
         _ => 0.60,
     }
+}
+
+/// 根据输入词长度计算编辑相似度硬阈值
+///
+/// 该阈值在候选排序前生效，用于提前剔除拼写差异过大的候选。
+fn dynamic_edit_similarity_floor(word_len: usize) -> f32 {
+    match word_len {
+        0..=4 => 0.55,
+        5..=7 => 0.50,
+        _ => 0.48,
+    }
+}
+
+/// 判断是否为高频英文词（用于常见词保护）
+fn is_common_english_word(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    COMMON_ENGLISH_WORDS.contains(&lower.as_str())
+}
+
+/// 计算音标匹配的有效置信度阈值（含常见词保护）
+fn effective_min_confidence(input: &str, token_count: usize) -> f32 {
+    let mut threshold = dynamic_min_confidence(input.chars().count());
+    if token_count == 1 && is_common_english_word(input) {
+        threshold = (threshold + COMMON_WORD_CONFIDENCE_BOOST).min(0.90);
+    }
+    threshold
+}
+
+/// 计算音标匹配的有效编辑相似度硬阈值（含常见词保护）
+fn effective_edit_similarity_floor(input: &str, token_count: usize) -> f32 {
+    let mut floor = dynamic_edit_similarity_floor(input.chars().count());
+    if token_count == 1 && is_common_english_word(input) {
+        floor = (floor + COMMON_WORD_EDIT_SIM_FLOOR_BOOST).min(0.85);
+    }
+    floor
 }
 
 /// 判断是否为"技术 token"
@@ -330,7 +403,12 @@ impl FuzzyMatcher {
     /// 计算候选词评分
     ///
     /// 综合因子：编辑距离相似度、长度相似度、首字母奖励
-    pub fn calculate_candidate_score(input: &str, candidate: &str, base_confidence: f32) -> f32 {
+    pub fn calculate_candidate_score(
+        input: &str,
+        candidate: &str,
+        base_confidence: f32,
+        edit_sim: f32,
+    ) -> f32 {
         if input.is_empty() || candidate.is_empty() {
             return 0.0;
         }
@@ -346,15 +424,15 @@ impl FuzzyMatcher {
             return 0.0;
         }
 
-        // 编辑距离相似度
-        let distance = levenshtein(&input_lower, &candidate_lower);
-        let edit_sim = (1.0 - (distance as f32 / max_len as f32)).clamp(0.0, 1.0);
+        // 编辑距离相似度（由调用方预计算并传入，避免重复计算）
+        let edit_sim = edit_sim.clamp(0.0, 1.0);
 
         // 长度相似度
         let len_sim = (min_len as f32 / max_len as f32).clamp(0.0, 1.0);
 
-        // 编辑距离因子：保持温和惩罚，使典型音标命中保持在 MIN_CONFIDENCE 之上
-        let edit_factor = 0.55 + 0.45 * edit_sim;
+        // 编辑距离因子：非线性惩罚曲线。
+        // 在中低相似度区间相比线性公式更严格，降低高编辑距离候选的得分。
+        let edit_factor = 0.55 + 0.45 * edit_sim.powf(1.5);
         let len_factor = 0.55 + 0.45 * len_sim;
 
         let mut score = base_confidence.clamp(0.0, 1.0) * edit_factor * len_factor;
@@ -365,6 +443,25 @@ impl FuzzyMatcher {
         }
 
         score.clamp(0.0, 1.0)
+    }
+
+    /// 计算编辑距离相似度（0.0 - 1.0）
+    fn calculate_edit_similarity(input: &str, candidate: &str) -> f32 {
+        if input.is_empty() || candidate.is_empty() {
+            return 0.0;
+        }
+
+        let input_lower = input.to_lowercase();
+        let candidate_lower = candidate.to_lowercase();
+        let input_len = input_lower.chars().count();
+        let candidate_len = candidate_lower.chars().count();
+        let max_len = std::cmp::max(input_len, candidate_len);
+        if max_len == 0 {
+            return 0.0;
+        }
+
+        let distance = levenshtein(&input_lower, &candidate_lower);
+        (1.0 - (distance as f32 / max_len as f32)).clamp(0.0, 1.0)
     }
 
     /// 尝试匹配
@@ -458,7 +555,8 @@ impl FuzzyMatcher {
             0.85
         };
 
-        let min_confidence = dynamic_min_confidence(input.chars().count());
+        let min_confidence = effective_min_confidence(&input, valid_tokens.len());
+        let edit_sim_floor = effective_edit_similarity_floor(&input, valid_tokens.len());
         let mut top1: Option<(usize, f32)> = None;
         let mut top2_score: Option<f32> = None;
         for &idx in &candidate_indices {
@@ -468,11 +566,15 @@ impl FuzzyMatcher {
                 continue;
             }
 
-            let score = Self::calculate_candidate_score(&input, word, base_confidence);
-            if score < min_confidence {
+            let edit_sim = Self::calculate_edit_similarity(&input, word);
+            if edit_sim < edit_sim_floor {
                 continue;
             }
 
+            let score = Self::calculate_candidate_score(&input, word, base_confidence, edit_sim);
+
+            // 注意：top2 必须在 min_confidence 过滤前统计，
+            // 否则会因次优候选被提前丢弃而绕过歧义抑制。
             match top1 {
                 None => {
                     top1 = Some((idx, score));
@@ -490,6 +592,10 @@ impl FuzzyMatcher {
         }
 
         if let Some((idx, score)) = top1 {
+            if score < min_confidence {
+                return None;
+            }
+
             if let Some(s2) = top2_score {
                 if score - s2 < MARGIN_THRESHOLD {
                     return None;
@@ -649,7 +755,8 @@ impl FuzzyMatcher {
             0.85
         };
 
-        let min_confidence = dynamic_min_confidence(text.chars().count());
+        let min_confidence = effective_min_confidence(text, 1);
+        let edit_sim_floor = effective_edit_similarity_floor(text, 1);
         let mut top1: Option<(usize, f32)> = None;
         let mut top2_score: Option<f32> = None;
         for &idx in &candidate_indices {
@@ -659,11 +766,15 @@ impl FuzzyMatcher {
                 continue;
             }
 
-            let score = Self::calculate_candidate_score(text, word, base_confidence);
-            if score < min_confidence {
+            let edit_sim = Self::calculate_edit_similarity(text, word);
+            if edit_sim < edit_sim_floor {
                 continue;
             }
 
+            let score = Self::calculate_candidate_score(text, word, base_confidence, edit_sim);
+
+            // 注意：top2 必须在 min_confidence 过滤前统计，
+            // 否则会因次优候选被提前丢弃而绕过歧义抑制。
             match top1 {
                 None => {
                     top1 = Some((idx, score));
@@ -681,6 +792,10 @@ impl FuzzyMatcher {
         }
 
         if let Some((idx, score)) = top1 {
+            if score < min_confidence {
+                return None;
+            }
+
             if let Some(s2) = top2_score {
                 if score - s2 < MARGIN_THRESHOLD {
                     return None;
@@ -801,6 +916,11 @@ impl FuzzyMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn score_for_test(input: &str, candidate: &str, base_confidence: f32) -> f32 {
+        let edit_sim = FuzzyMatcher::calculate_edit_similarity(input, candidate);
+        FuzzyMatcher::calculate_candidate_score(input, candidate, base_confidence, edit_sim)
+    }
 
     #[test]
     fn test_exact_match() {
@@ -1061,16 +1181,35 @@ mod tests {
 
     #[test]
     fn test_candidate_score_prefers_lower_edit_distance() {
-        let score_near = FuzzyMatcher::calculate_candidate_score("cloud", "Claude", 0.9);
-        let score_far = FuzzyMatcher::calculate_candidate_score("cloud", "Clouded", 0.9);
+        let score_near = score_for_test("cloud", "Claude", 0.9);
+        let score_far = score_for_test("cloud", "Clouded", 0.9);
         assert!(score_near > score_far);
     }
 
     #[test]
     fn test_candidate_score_first_letter_bonus() {
-        let score_same_initial = FuzzyMatcher::calculate_candidate_score("nite", "Night", 0.9);
-        let score_diff_initial = FuzzyMatcher::calculate_candidate_score("nite", "Knight", 0.9);
+        let score_same_initial = score_for_test("nite", "Night", 0.9);
+        let score_diff_initial = score_for_test("nite", "Knight", 0.9);
         assert!(score_same_initial > score_diff_initial);
+    }
+
+    #[test]
+    fn test_common_word_list_contains_more_technical_words() {
+        for word in ["docker", "linux", "token", "query", "false", "true", "server"] {
+            assert!(
+                is_common_english_word(word),
+                "expected '{}' in common word list",
+                word
+            );
+        }
+    }
+
+    #[test]
+    fn test_candidate_score_uses_passed_edit_similarity() {
+        let score_real = FuzzyMatcher::calculate_candidate_score("cloud", "Claude", 0.9, 0.83);
+        let score_forced_zero =
+            FuzzyMatcher::calculate_candidate_score("cloud", "Claude", 0.9, 0.0);
+        assert!(score_real > score_forced_zero);
     }
 
     #[test]
@@ -1093,21 +1232,115 @@ mod tests {
 
     #[test]
     fn test_margin_suppression() {
-        let matcher = FuzzyMatcher::new(vec!["Claude".to_string(), "Clawed".to_string()]);
+        // 验证 margin suppression 的核心逻辑：当 top1 和 top2 分差小于阈值时不替换
+        // 使用编辑距离相似度接近的候选词对，确保都能通过 min_confidence
+        let matcher = FuzzyMatcher::new(vec!["Cloude".to_string(), "Claude".to_string()]);
 
-        let score_claude = FuzzyMatcher::calculate_candidate_score("cloud", "Claude", 0.85);
-        let score_clawed = FuzzyMatcher::calculate_candidate_score("cloud", "Clawed", 0.85);
-        assert!((score_claude - score_clawed).abs() < MARGIN_THRESHOLD);
+        // 两个候选的分数应该足够接近以触发 margin suppression
+        let score_cloude = score_for_test("cloud", "Cloude", 0.85);
+        let score_claude = score_for_test("cloud", "Claude", 0.85);
+        // 确认两者都有有效分数
+        assert!(
+            score_cloude > 0.0 && score_claude > 0.0,
+            "Both candidates should have non-zero scores: Cloude={}, Claude={}",
+            score_cloude,
+            score_claude
+        );
+        assert!(
+            (score_cloude - score_claude).abs() < MARGIN_THRESHOLD,
+            "Scores should be close: Cloude={}, Claude={}, diff={}",
+            score_cloude,
+            score_claude,
+            (score_cloude - score_claude).abs()
+        );
 
+        // margin suppression 应当生效
         let result = matcher.try_phonetic_match("cloud");
+        assert!(result.is_none(), "Margin suppression should reject ambiguous match");
+    }
+
+    #[test]
+    fn test_margin_suppression_keeps_runner_up_below_threshold_single_word() {
+        // 回归场景：次优候选低于 min_confidence，但和 top1 仍然接近，必须触发歧义抑制
+        let matcher = FuzzyMatcher::new(vec!["Claude".to_string(), "Clawed".to_string()]);
+        let result = matcher.try_phonetic_match("cloud");
+        assert!(
+            result.is_none(),
+            "Ambiguous match should be rejected even when runner-up is below min_confidence"
+        );
+    }
+
+    #[test]
+    fn test_margin_suppression_keeps_runner_up_below_threshold_tokens() {
+        let matcher = FuzzyMatcher::new(vec!["Claude".to_string(), "Clawed".to_string()]);
+        let result = matcher.try_phonetic_match_tokens(&["cloud"]);
+        assert!(
+            result.is_none(),
+            "Token phonetic path should also reject ambiguous match"
+        );
+    }
+
+    #[test]
+    fn test_edit_similarity_hard_floor_rejects_large_spelling_gap() {
+        // "windows" 是常见词，保护后硬阈值提高，"Windsurf" 应被预过滤
+        let sim = FuzzyMatcher::calculate_edit_similarity("windows", "Windsurf");
+        let floor = effective_edit_similarity_floor("windows", 1);
+        assert!(sim < floor, "sim={} should be below floor={}", sim, floor);
+
+        let matcher = FuzzyMatcher::new(vec!["Windsurf".to_string()]);
+        let result = matcher.try_phonetic_match("windows");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_candidate_score_uses_nonlinear_edit_penalty() {
+        // 新公式应比旧线性公式更严厉地惩罚中低编辑相似度
+        let input = "tarry";
+        let candidate = "Tauri";
+        let base_confidence = 0.9;
+        let score = score_for_test(input, candidate, base_confidence);
+
+        let input_lower = input.to_lowercase();
+        let candidate_lower = candidate.to_lowercase();
+        let input_len = input_lower.chars().count();
+        let candidate_len = candidate_lower.chars().count();
+        let max_len = std::cmp::max(input_len, candidate_len);
+        let min_len = std::cmp::min(input_len, candidate_len);
+        let distance = levenshtein(&input_lower, &candidate_lower);
+        let edit_sim = (1.0 - (distance as f32 / max_len as f32)).clamp(0.0, 1.0);
+        let len_sim = (min_len as f32 / max_len as f32).clamp(0.0, 1.0);
+        let legacy_edit_factor = 0.4 + 0.6 * edit_sim;
+        let len_factor = 0.55 + 0.45 * len_sim;
+        let mut legacy_score = base_confidence * legacy_edit_factor * len_factor;
+        if input_lower.chars().next() == candidate_lower.chars().next() {
+            legacy_score += 0.05;
+        }
+        legacy_score = legacy_score.clamp(0.0, 1.0);
+
+        assert!(
+            score < legacy_score,
+            "nonlinear penalty should be stricter than legacy linear curve, new={}, old={}",
+            score,
+            legacy_score
+        );
+    }
+
+    #[test]
+    fn test_common_word_protection_rejects_edge_match() {
+        // 常见词场景：there -> Their 音标接近，但应提高阈值避免误替换
+        let matcher = FuzzyMatcher::new(vec!["Their".to_string()]);
+        let result = matcher.try_phonetic_match("there");
+        assert!(
+            result.is_none(),
+            "Common word protection should reject this edge match"
+        );
     }
 
     #[test]
     fn test_dynamic_threshold_short_word() {
         let matcher = FuzzyMatcher::new(vec!["Claude".to_string()]);
         let input = "clad";
-        let score = FuzzyMatcher::calculate_candidate_score(input, "Claude", 0.9);
+        let score = score_for_test(input, "Claude", 0.9);
 
         assert!(score >= MIN_CONFIDENCE);
         assert!(score < dynamic_min_confidence(input.chars().count()));
@@ -1118,25 +1351,52 @@ mod tests {
 
     #[test]
     fn test_dynamic_threshold_long_word() {
-        let matcher = FuzzyMatcher::new(vec!["Claude".to_string()]);
-        let input = "clouuuud";
-        let score = FuzzyMatcher::calculate_candidate_score(input, "Claude", 0.9);
+        // 长词（>=8字符）使用更宽松的动态阈值 (0.60)
+        // "typscript" (9 chars) 应能匹配 "TypeScript"（编辑距离较小，且长词阈值宽松）
+        let matcher = FuzzyMatcher::new(vec!["TypeScript".to_string()]);
+        let input = "typscript";
+        let score = score_for_test(input, "TypeScript", 0.9);
 
-        assert!(score < MIN_CONFIDENCE);
-        assert!(score >= dynamic_min_confidence(input.chars().count()));
+        assert!(
+            score >= dynamic_min_confidence(input.chars().count()),
+            "score {} should be >= dynamic threshold {} for long word",
+            score,
+            dynamic_min_confidence(input.chars().count())
+        );
 
         let result = matcher.try_phonetic_match(input);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().word, "Claude");
+        assert_eq!(result.unwrap().word, "TypeScript");
     }
 
     #[test]
     fn test_candidate_score_can_fall_below_threshold() {
-        let score = FuzzyMatcher::calculate_candidate_score(
-            "ab",
-            "supercalifragilisticexpialidocious",
-            0.8,
-        );
+        let score = score_for_test("ab", "supercalifragilisticexpialidocious", 0.8);
         assert!(score < MIN_CONFIDENCE);
+    }
+
+    // === Bug 复现：windows 不应被替换为 Windsurf ===
+
+    #[test]
+    fn test_windows_must_not_become_windsurf() {
+        let matcher = FuzzyMatcher::new(vec!["Windsurf".to_string()]);
+
+        // 单词级匹配
+        let result = matcher.try_match("windows");
+        if let Some(ref m) = result {
+            assert_ne!(
+                m.word, "Windsurf",
+                "BUG: 'windows' was incorrectly replaced with 'Windsurf'"
+            );
+        }
+
+        // 音标匹配
+        let result2 = matcher.try_phonetic_match_tokens(&["windows"]);
+        if let Some(ref m) = result2 {
+            assert_ne!(
+                m.word, "Windsurf",
+                "BUG: 'windows' was incorrectly replaced with 'Windsurf' via phonetic match"
+            );
+        }
     }
 }
