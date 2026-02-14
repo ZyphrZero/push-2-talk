@@ -2,6 +2,7 @@
 //!
 //! 组合分词、技术片段识别、口语符号映射、模糊匹配
 
+use std::collections::HashSet;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
@@ -130,6 +131,16 @@ fn precompute_next_is_digit(tokens: &[Token]) -> Vec<bool> {
     result
 }
 
+/// 连字符词库重写规则
+///
+/// 用于将词库中的连字符词（如 `GPT-5.3-Codex`）匹配输入中的空格/连字符混合形式，
+/// 并重写为词库原词。
+#[derive(Debug, Clone)]
+struct HyphenDictionaryRule {
+    canonical: String,
+    segments: Vec<String>,
+}
+
 /// TNL 引擎（可复用，预编译规则）
 pub struct TnlEngine {
     /// 口语符号映射
@@ -138,6 +149,8 @@ pub struct TnlEngine {
     tech_span_detector: TechSpanDetector,
     /// 模糊匹配器（可选）
     fuzzy_matcher: Option<FuzzyMatcher>,
+    /// 连字符词库重写规则（仅针对包含 `-` 的词条）
+    hyphen_rules: Vec<HyphenDictionaryRule>,
 }
 
 impl TnlEngine {
@@ -149,6 +162,7 @@ impl TnlEngine {
         let spoken_symbol_map = SpokenSymbolMap::new();
         let ext_whitelist = ExtensionWhitelist::new();
         let tech_span_detector = TechSpanDetector::new(ext_whitelist);
+        let hyphen_rules = Self::build_hyphen_rules(&dictionary);
         let fuzzy_matcher = if dictionary.is_empty() {
             None
         } else {
@@ -159,6 +173,7 @@ impl TnlEngine {
             spoken_symbol_map,
             tech_span_detector,
             fuzzy_matcher,
+            hyphen_rules,
         }
     }
 
@@ -196,13 +211,17 @@ impl TnlEngine {
         // 5. 拼音词库替换（精确匹配，带声调）
         let (pinyin_text, pinyin_replacements) = self.apply_pinyin_replacement(&mapped_text);
 
+        // 5.5 连字符词库定向重写（如 "GPT 5.3 Codex" -> "GPT-5.3-Codex"）
+        let (hyphen_text, hyphen_replacements) = self.apply_hyphen_dictionary_rewrite(&pinyin_text);
+
         // 6. 音标词库替换（英文复合词匹配）
-        let (replaced_text, phonetic_replacements) = self.apply_phonetic_replacement(&pinyin_text);
+        let (replaced_text, phonetic_replacements) = self.apply_phonetic_replacement(&hyphen_text);
 
         // 合并替换记录
         let mut applied = letter_merge_replacements;
         applied.extend(symbol_replacements);
         applied.extend(pinyin_replacements);
+        applied.extend(hyphen_replacements);
         applied.extend(phonetic_replacements);
 
         let elapsed_us = start.elapsed().as_micros() as u64;
@@ -445,6 +464,88 @@ impl TnlEngine {
         (result, replacements)
     }
 
+    /// 应用连字符词库定向重写
+    ///
+    /// 仅匹配词库中显式包含连字符的词条，并允许输入中的分隔符是：
+    /// - 连字符（可带空格）
+    /// - 空格
+    ///
+    /// 示例：
+    /// - GPT 5.3 Codex -> GPT-5.3-Codex
+    /// - gpt-5.3 codex -> GPT-5.3-Codex
+    fn apply_hyphen_dictionary_rewrite(&self, text: &str) -> (String, Vec<Replacement>) {
+        if text.is_empty() || self.hyphen_rules.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        let bytes = text.as_bytes();
+        let mut candidates: Vec<(usize, usize, &HyphenDictionaryRule)> = Vec::new();
+
+        for (start, _) in text.char_indices() {
+            let mut best: Option<(usize, &HyphenDictionaryRule)> = None;
+
+            for rule in &self.hyphen_rules {
+                if let Some(end) = Self::try_match_hyphen_rule(bytes, start, rule) {
+                    if best.map_or(true, |(best_end, _)| end > best_end) {
+                        best = Some((end, rule));
+                    }
+                }
+            }
+
+            if let Some((end, rule)) = best {
+                candidates.push((start, end, rule));
+            }
+        }
+
+        if candidates.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        // 先按起始位置排序，再按长度降序，便于贪心选择不重叠匹配
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| (b.1 - b.0).cmp(&(a.1 - a.0))));
+
+        let mut selected: Vec<(usize, usize, &HyphenDictionaryRule)> = Vec::new();
+        let mut cursor = 0usize;
+        for candidate in candidates {
+            if candidate.0 < cursor {
+                continue;
+            }
+            cursor = candidate.1;
+            selected.push(candidate);
+        }
+
+        if selected.is_empty() {
+            return (text.to_string(), Vec::new());
+        }
+
+        let mut result = String::with_capacity(text.len());
+        let mut replacements = Vec::new();
+        let mut last_end = 0usize;
+
+        for (start, end, rule) in selected {
+            result.push_str(&text[last_end..start]);
+            let original = &text[start..end];
+            result.push_str(&rule.canonical);
+
+            if original != rule.canonical {
+                replacements.push(Replacement {
+                    original: original.to_string(),
+                    replaced: rule.canonical.clone(),
+                    start,
+                    end,
+                    confidence: 1.0,
+                    reason: ReplacementReason::DictionaryExact,
+                });
+            }
+
+            last_end = end;
+        }
+
+        result.push_str(&text[last_end..]);
+
+        (result, replacements)
+    }
+
     /// 应用音标词库替换
     ///
     /// 对连续英文单词尝试音标匹配替换（复合词匹配）
@@ -555,6 +656,152 @@ impl TnlEngine {
         }
 
         (result, replacements)
+    }
+
+    /// 从词库构建连字符重写规则
+    ///
+    /// 只保留 ASCII 连字符词条，降低误命中风险。
+    fn build_hyphen_rules(dictionary: &[String]) -> Vec<HyphenDictionaryRule> {
+        let mut dedup = HashSet::new();
+        let mut rules = Vec::new();
+
+        for word in dictionary {
+            let candidate = word.trim();
+            if !candidate.is_ascii() || !candidate.contains('-') {
+                continue;
+            }
+
+            let segments: Vec<String> = candidate
+                .split('-')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+
+            if segments.len() < 2 {
+                continue;
+            }
+
+            let compact_len: usize = segments.iter().map(|s| s.len()).sum();
+            if compact_len < 5 {
+                continue;
+            }
+
+            let has_alpha = segments
+                .iter()
+                .any(|s| s.bytes().any(|b| b.is_ascii_alphabetic()));
+            if !has_alpha {
+                continue;
+            }
+
+            let valid_segments = segments.iter().all(|s| {
+                s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+            });
+            if !valid_segments {
+                continue;
+            }
+
+            let canonical = segments.join("-");
+            let dedup_key = canonical.to_ascii_lowercase();
+            if dedup.insert(dedup_key) {
+                rules.push(HyphenDictionaryRule {
+                    canonical,
+                    segments,
+                });
+            }
+        }
+
+        // 最长优先，避免短词抢占长词
+        rules.sort_by(|a, b| {
+            b.canonical
+                .len()
+                .cmp(&a.canonical.len())
+                .then_with(|| a.canonical.cmp(&b.canonical))
+        });
+        rules
+    }
+
+    /// 尝试在 `start` 位置匹配连字符规则，返回匹配结束字节位置
+    fn try_match_hyphen_rule(
+        bytes: &[u8],
+        start: usize,
+        rule: &HyphenDictionaryRule,
+    ) -> Option<usize> {
+        if start >= bytes.len() {
+            return None;
+        }
+
+        // 左边界保护：前一个字符不能是 ASCII 单词字符
+        if start > 0 && Self::is_ascii_word_byte(bytes[start - 1]) {
+            return None;
+        }
+
+        let mut pos = start;
+        for (idx, segment) in rule.segments.iter().enumerate() {
+            pos = Self::match_ascii_segment(bytes, pos, segment.as_bytes())?;
+            if idx + 1 < rule.segments.len() {
+                pos = Self::consume_hyphen_separator(bytes, pos)?;
+            }
+        }
+
+        // 右边界保护：后一个字符不能是 ASCII 单词字符
+        if pos < bytes.len() && Self::is_ascii_word_byte(bytes[pos]) {
+            return None;
+        }
+
+        Some(pos)
+    }
+
+    /// 匹配一个 ASCII 段（大小写不敏感）
+    fn match_ascii_segment(bytes: &[u8], start: usize, segment: &[u8]) -> Option<usize> {
+        let end = start.checked_add(segment.len())?;
+        if end > bytes.len() {
+            return None;
+        }
+
+        for (offset, expected) in segment.iter().enumerate() {
+            let actual = bytes[start + offset];
+            if !actual.is_ascii() {
+                return None;
+            }
+            if actual.to_ascii_lowercase() != expected.to_ascii_lowercase() {
+                return None;
+            }
+        }
+
+        Some(end)
+    }
+
+    /// 消费段间分隔符
+    ///
+    /// 合法分隔符：
+    /// - 一个或多个空格
+    /// - 连字符（前后允许空格）
+    fn consume_hyphen_separator(bytes: &[u8], start: usize) -> Option<usize> {
+        let mut pos = start;
+        while pos < bytes.len() && bytes[pos] == b' ' {
+            pos += 1;
+        }
+
+        if pos < bytes.len() && bytes[pos] == b'-' {
+            pos += 1;
+            while pos < bytes.len() && bytes[pos] == b' ' {
+                pos += 1;
+            }
+            return Some(pos);
+        }
+
+        if pos > start {
+            return Some(pos);
+        }
+
+        None
+    }
+
+    #[inline]
+    fn is_ascii_word_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
     }
 }
 
@@ -944,6 +1191,37 @@ mod tests {
         let result = engine.normalize("请使用 gpt4 模型");
         assert!(result.changed);
         assert!(result.text.contains("gpt4o"));
+    }
+
+    #[test]
+    fn test_hyphen_dictionary_rewrite_space_separated_version_term() {
+        let engine = TnlEngine::new(vec!["GPT-5.3-Codex".to_string()]);
+
+        let result = engine.normalize("请切换到 GPT 5.3 Codex 模型");
+        assert!(result.changed);
+        assert_eq!(result.text, "请切换到 GPT-5.3-Codex 模型");
+        assert!(result
+            .applied
+            .iter()
+            .any(|r| matches!(r.reason, ReplacementReason::DictionaryExact)));
+    }
+
+    #[test]
+    fn test_hyphen_dictionary_rewrite_mixed_separator_and_case() {
+        let engine = TnlEngine::new(vec!["GPT-5.3-Codex".to_string()]);
+
+        let result = engine.normalize("请切换到 gpt-5.3 codex 模型");
+        assert!(result.changed);
+        assert_eq!(result.text, "请切换到 GPT-5.3-Codex 模型");
+    }
+
+    #[test]
+    fn test_hyphen_dictionary_rewrite_respects_word_boundary() {
+        let engine = TnlEngine::new(vec!["GPT-5.3-Codex".to_string()]);
+
+        let result = engine.normalize("请切换到 GPT 5.3 CodexX 模型");
+        assert!(!result.text.contains("GPT-5.3-Codex"));
+        assert_eq!(result.text, "请切换到 GPT 5.3 CodexX 模型");
     }
 
     // === 连续单字母合并测试 ===
