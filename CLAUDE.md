@@ -77,15 +77,17 @@ PushToTalk is a desktop application built with Tauri 2.0 that enables voice-to-t
   - Toggle/Release mode (press once to start, press again to finish, F2 default)
 - **AI Assistant Mode**: Context-aware text processing with voice commands (Alt+Space default)
 - **Custom Hotkey Binding**: 73 keys supported (modifiers, letters, numbers, F1-F12, arrows, etc.)
-- **Multi-ASR Support**: Alibaba Qwen (realtime/HTTP), Doubao (realtime/HTTP), SiliconFlow SenseVoice
-- **ASR Fallback Strategy**: Automatic fallback from Doubao/Qwen to SenseVoice with parallel racing
+- **Multi-ASR Support**: Alibaba Qwen (realtime/HTTP), Doubao (realtime/HTTP), Doubao IME, SiliconFlow SenseVoice
+- **ASR Fallback Strategy**: Automatic fallback from Doubao/Qwen to SenseVoice with parallel racing (Doubao IME currently runs without fallback)
+- **TNL Normalization Layer**: Deterministic text normalization between ASR and LLM (pinyin/phonetic matching, single-letter merge, hyphen dictionary rewrite)
 - **LLM Post-Processing**: Optional text polishing, translation, or formatting via OpenAI-compatible APIs
 - **Visual Feedback**: Overlay window shows recording status with real-time waveform visualization
 - **Audio Feedback**: Start/stop beep sounds via rodio player
 - **Transcription History**: Automatic history tracking with search and copy functionality
-- **System Tray**: Minimize to tray on close, auto-start on boot support
+- **Builtin Dictionary Runtime Refresh**: Background pull + atomic cache update + frontend dynamic refresh event
+- **System Tray**: Minimize to tray on close, auto-start on boot, and quick runtime switches for ASR/post-processing/dictionary enhancement
 - **Multi-Configuration**: Save and switch between different LLM prompt presets
-- **Auto-Update**: Tauri Plugin Updater v2 with 6 mirror endpoints for reliable updates
+- **Auto-Update**: Tauri Plugin Updater v2 with 6 mirror endpoints and cross-version release notes aggregation
 - **Personal Dictionary**: Custom hotword list for improved recognition of professional terms
 - **VAD (Voice Activity Detection)**: Smart silence detection with hangover mechanism to prevent word clipping
 - **AGC (Automatic Gain Control)**: Auto volume adjustment for better recognition of soft speech
@@ -95,12 +97,14 @@ PushToTalk is a desktop application built with Tauri 2.0 that enables voice-to-t
 - **UIA Text Reading**: Uses Windows UI Automation API for non-intrusive text capture (replaces clipboard method)
 - **LLM Provider Registry**: Multi-provider management with connection testing and latency display
 - **Theme Support**: Light/dark theme switching
+- **Global Notice Capsule**: Fixed top-layer status capsule (`GlobalNoticeHost` + `NoticeCapsule`) decoupled from layout flow
 
 ## Development Commands
 
 ### Development
 ```bash
 npm install                    # Install frontend dependencies
+npm run test:ts               # Run TypeScript runtime tests in tests/*.test.ts
 npm run tauri dev             # Run dev server (requires admin rights on Windows)
 ```
 
@@ -164,15 +168,18 @@ The Rust backend is organized into independent modules that communicate through 
    - **asr/http/doubao.rs** - Doubao HTTP mode
      - Supports personal dictionary via `additions` parameter
    - **asr/http/sensevoice.rs** - SiliconFlow SenseVoice fallback
+   - **asr/doubao_ime.rs** - Doubao IME realtime client with auto credential bootstrap and refresh
    - **asr/realtime/qwen.rs** - Qwen WebSocket realtime mode
      - Supports personal dictionary via `vocabulary` in transcription config
    - **asr/realtime/doubao.rs** - Doubao WebSocket realtime mode
      - Supports personal dictionary via `additions` parameter
+     - Uses bidirectional streaming path (updated around 2026-02) for better realtime reliability
    - **asr/race_strategy.rs** - Parallel ASR request racing with automatic fallback
      - Primary ASR (Qwen/Doubao) retries up to 2 times with 500ms delay
      - SenseVoice runs in parallel background thread
      - Smart fallback: checks background result before each retry
      - Returns first success or combined error if both fail
+   - Doubao IME currently does not participate in fallback selection
    - **Timeout & Retry**: 6s request timeout with automatic retry (max 2 retries)
    - Base64 encodes audio before upload in HTTP mode
 
@@ -225,8 +232,8 @@ The Rust backend is organized into independent modules that communicate through 
     - Uses `dirs` crate for cross-platform app data directory
 
 12. **pipeline/** - Processing pipeline framework
-    - **pipeline/normal.rs** - Dictation mode pipeline: ASR → Optional LLM → Insert
-    - **pipeline/assistant.rs** - AI Assistant pipeline: Capture → ASR → Context LLM → Replace
+    - **pipeline/normal.rs** - Dictation mode pipeline: ASR → TNL → Optional LLM → Insert
+    - **pipeline/assistant.rs** - AI Assistant pipeline: Capture → ASR → TNL → Context LLM → Replace
     - Pipeline result structure tracks timing metrics (ASR time, LLM time, total time)
     - Clean separation of concerns between transcription and text processing
     - **Learning integration**: Triggers vocabulary learning observation after text insertion
@@ -265,6 +272,10 @@ The Rust backend is organized into independent modules that communicate through 
     - Connection testing with latency measurement
     - Supports provider registry configuration
 
+Additional notable modules:
+- **builtin_dictionary_updater.rs** - 6-mirror remote hotword fetch, validation, and atomic cache replacement
+- **tnl/** - Technical Normalization Layer rules and engine used by both normal and assistant pipelines
+
 ### Frontend Architecture (src/)
 
 Multi-page React app with Tauri IPC communication:
@@ -292,6 +303,7 @@ Multi-page React app with Tauri IPC communication:
     - `LlmConnectionConfig.tsx` - Reusable LLM provider selector
     - `ThemeSelector.tsx` - Light/dark theme toggle
     - `VocabularyLearningToast.tsx` - Learning suggestion notifications
+    - `GlobalNoticeHost.tsx` + `NoticeCapsule.tsx` - Floating runtime notice capsule
 
 - **Overlay Window (src/windows/OverlayWindow.tsx)**: Floating recording status indicator
   - **Three visual states**:
@@ -317,8 +329,8 @@ Multi-page React app with Tauri IPC communication:
 
 - **State Management**: React hooks (useState, useEffect) for local state
 - **Tauri Communication**:
-  - `invoke()` for commands: `save_config`, `load_config`, `start_app`, `stop_app`, `get_history`, `get_auto_start_enabled`, `set_auto_start`, etc.
-  - `listen()` for events: `recording_started`, `recording_stopped`, `recording_locked`, `transcribing`, `transcription_complete`, `error`, `audio_level`, `overlay_update`, `learning_suggestion`
+  - `invoke()` for commands: `save_config`, `patch_config_fields`, `load_config`, `get_builtin_domains_raw`, `start_app`, `stop_app`, `set_autostart`, `get_autostart`, `update_runtime_config`, `test_llm_provider`, etc.
+  - `listen()` for events: `recording_started`, `recording_stopped`, `recording_locked`, `transcribing`, `transcription_complete`, `error`, `audio_level`, `overlay_update`, `learning_suggestion`, `builtin_dictionary_updated`, `config_updated`, `polishing_failed`
 
 ### Critical Event Flow
 
@@ -438,19 +450,17 @@ Learning Observation Flow (after text insertion):
 
 ### Tauri IPC Commands (lib.rs)
 
-All backend functions exposed via `#[tauri::command]`:
+All backend functions exposed via `#[tauri::command]` include:
 
-- `save_config(config: AppConfig)` - Persist full configuration to disk with automatic migration
-- `load_config()` - Load saved configuration
-- `start_app(window: Window, config: AppConfig)` - Initialize all services and start hotkey listener
-- `stop_app()` - Cleanup and stop services
-- `get_history()` - Retrieve transcription history
-- `clear_history()` - Delete all history records
-- `get_auto_start_enabled()` - Check if auto-start is enabled
-- `set_auto_start(enable: bool)` - Toggle auto-start on boot (requires admin)
-- `test_llm_connection(endpoint, api_key, model)` - Test LLM provider connection with latency measurement (NEW)
-- `accept_learning_suggestion(word)` - Accept vocabulary learning suggestion (NEW)
-- `reject_learning_suggestion(id)` - Reject vocabulary learning suggestion (NEW)
+- `save_config(config: AppConfig)` / `patch_config_fields(patch)` / `load_config()` - configuration persistence and incremental patch updates
+- `get_builtin_domains_raw()` - read builtin dictionary domain snapshot for frontend parsing
+- `start_app(...)` / `stop_app()` / `update_runtime_config(...)` - start-stop lifecycle and runtime switch updates
+- `set_autostart(enable)` / `get_autostart()` - Windows auto-start controls
+- `add_learned_word(...)` / `get_dictionary_entries()` / `delete_dictionary_entries(...)` - dictionary CRUD and learning integration
+- `show_notification_window(...)` / `dismiss_learning_suggestion(id)` - learning toast window control
+- `cancel_transcription()` / `finish_locked_recording()` / `cancel_locked_recording()` - recording flow controls
+- `hide_to_tray()` / `quit_app()` / `show_overlay(...)` / `hide_overlay()` - window and tray interactions
+- `test_llm_provider(endpoint, api_key, model)` - LLM provider connectivity and latency check
 
 The `AppState` struct manages shared mutable state across all services using `Arc<Mutex<>>` and atomic flags.
 
@@ -458,7 +468,7 @@ The `AppState` struct manages shared mutable state across all services using `Ar
 
 - **Minimize to Tray**: Configurable option to minimize instead of close
 - **Auto-Start**: Windows registry-based auto-start on boot (requires admin)
-- **Tray Menu**: Show/Hide window, Quit application
+- **Tray Menu**: Show/Hide window, Quit application, toggle post-processing/dictionary enhancement, and switch ASR provider (Qwen/Doubao/Doubao IME)
 
 ### Auto-Update System
 
@@ -467,7 +477,8 @@ The `AppState` struct manages shared mutable state across all services using `Ar
 - **Ed25519 Signature**: Public key verification for security
 - **Artifact Creation**: `createUpdaterArtifacts: true` in tauri.conf.json
 - **Update Flow**: Check → Download → Verify → Install → Restart
-- **Current Version**: 1.5.2
+- **Release Notes UX**: Aggregates notes across skipped versions in update modal
+- **Current Version**: 1.5.9
 
 ## Important Implementation Details
 

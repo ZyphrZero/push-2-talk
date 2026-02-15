@@ -6,20 +6,23 @@
 - `src-tauri/` contains the Rust backend, `src-tauri/tauri.conf.json`, and app icons in `src-tauri/icons/`.
 - `ui/` is for auxiliary UI assets or prototypes used by the frontend.
 - `scripts/` has build/release helpers; `dist/` is generated frontend output.
+- `tests/` contains TypeScript runtime regression tests (`tsx --test`).
 
 ### Key Backend Modules (src-tauri/src/)
-- `asr/` - Multi-provider ASR with HTTP and realtime modes (Qwen, Doubao, SenseVoice)
+- `asr/` - Multi-provider ASR with HTTP and realtime modes (Qwen, Doubao, Doubao IME, SenseVoice)
 - `pipeline/` - Processing pipelines for dictation and assistant modes
+- `tnl/` - Technical Normalization Layer between ASR and LLM (pinyin/phonetic matching, letter merge, hyphen rewrite)
 - `learning/` - Auto vocabulary learning (coordinator, diff_analyzer, llm_judge, validator, store)
+- `builtin_dictionary_updater.rs` - Remote builtin hotwords fetch + atomic cache persistence + runtime refresh events
 - `uia_text_reader.rs` - Windows UI Automation text capture
 - `openai_client.rs` - Shared LLM client with connection testing
 - `config.rs` - Configuration management with automatic migration
 
 ### Key Frontend Structure (src/)
 - `pages/` - Page components (Dashboard, ASR, Models, LLM, Assistant, Hotkeys, Dictionary, Preferences, History, Help)
-- `components/` - Reusable UI components (common/, layout/, learning/, live/, modals/, history/)
+- `components/` - Reusable UI components (common/, layout/, learning/, live/, modals/, history/, notice/)
 - `windows/` - Overlay and notification window components
-- `hooks/` - Custom React hooks (useAppServiceController, useDictionary, useHotkeyRecording, useUpdater)
+- `hooks/` - Custom React hooks (useAppServiceController, useDictionary, useHotkeyRecording, useUpdater, useTauriEventListeners)
 - `types/` - TypeScript type definitions
 - `utils/` - Utility functions (dictionaryUtils)
 
@@ -28,6 +31,7 @@
 - `npm run dev` starts the Vite dev server for the UI.
 - `npm run build` type-checks and builds the frontend bundle.
 - `npm run preview` serves the built UI locally.
+- `npm run test:ts` runs TypeScript runtime tests in `tests/*.test.ts`.
 - `npm run tauri dev` runs the desktop app in dev mode; run as Administrator so global hotkeys work.
 - `npm run tauri build` builds the NSIS installer only; output in `src-tauri/target/release/bundle/`.
 - `cd src-tauri` then `cargo build`, `cargo check`, or `cargo test` for the Rust backend.
@@ -44,7 +48,7 @@
 - Implement only after test validation, then make tests pass and refactor within scope.
 - Backend: run `cargo test` in `src-tauri/` for Rust tests.
 - API checks: use `cargo run --bin test_api` when touching ASR integrations.
-- Frontend: no dedicated JS test runner yet; smoke-test via `npm run dev` and `npm run build`.
+- Frontend: run `npm run test:ts`; additionally smoke-test via `npm run dev` and `npm run build`.
 - Final quality gate: ensure overall Cargo compilation passes in `src-tauri/` (at least `cargo check`; prefer `cargo build` for release readiness).
 
 ## Windows-Only & Architecture Notes
@@ -71,5 +75,12 @@
 ## Recent Feature Areas
 - **LLM Provider Registry**: Multi-provider management in `ModelsPage.tsx` and `config.rs`
 - **Auto Vocabulary Learning**: `learning/` module with UIA text capture
-- **Theme Support**: Light/dark themes via `ThemeSelector.tsx` and CSS variables
-- **Connection Testing**: `test_llm_connection` command with latency measurement
+- **TNL Normalization Layer**: `tnl/` module for deterministic ASR normalization (pinyin/phonetic/hyphen/letter-merge)
+- **Doubao IME First-Class ASR**: default provider, automatic credential bootstrap, and startup fallback behavior
+- **Builtin Dictionary Runtime Refresh**: `builtin_dictionary_updater.rs` + `builtin_dictionary_updated` event + dynamic frontend domain snapshot
+- **Tray Quick Switches**: runtime toggles for post-processing/dictionary enhancement and ASR provider switching from tray menu
+- **Update Notes Aggregation**: cross-version release notes merge in updater modal (`releaseNotes.ts`)
+- **Global Notice Capsule**: floating notification host (`GlobalNoticeHost.tsx`, `NoticeCapsule.tsx`)
+- **Doubao Realtime Tuning**: bidirectional streaming path and parameter tuning in `asr/realtime/doubao.rs`
+- **Polishing Failure Feedback**: runtime `polishing_failed` hint path from normal pipeline to frontend
+- **Connection Testing**: `test_llm_provider` command with latency measurement

@@ -42,6 +42,9 @@ src-tauri/Cargo.lock
 tmpclaude-*
 .claude/
 .ace-tool/
+.trellis/
+.cursor/
+.agents/
 
 # OpenSpec
 .openspec/
