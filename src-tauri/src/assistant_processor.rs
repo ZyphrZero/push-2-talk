@@ -22,11 +22,17 @@ pub struct AssistantProcessor {
 }
 
 impl AssistantProcessor {
+    /// AI 助手模式请求超时（秒）
+    ///
+    /// 助手模式可能涉及复杂推理，需要比默认 30 秒更长的等待时间
+    const ASSISTANT_TIMEOUT_SECS: u64 = 300;
+
     /// 创建新的 AI 助手处理器实例
     pub fn new(config: AssistantConfig, shared: &SharedLlmConfig) -> Self {
         let resolved = config.resolve_llm(shared);
         let client_config =
-            OpenAiClientConfig::new(&resolved.endpoint, &resolved.api_key, &resolved.model);
+            OpenAiClientConfig::new(&resolved.endpoint, &resolved.api_key, &resolved.model)
+                .with_timeout_secs(Self::ASSISTANT_TIMEOUT_SECS);
         let client = OpenAiClient::new(client_config);
 
         Self {

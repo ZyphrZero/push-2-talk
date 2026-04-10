@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, type MouseEvent, type RefObject } from "react";
-import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen } from "lucide-react";
+import { Activity, Copy, Mic, MessageSquare, Sparkles, ChevronDown, ChevronUp, BookOpen, Quote } from "lucide-react";
 
 export type TranscriptDisplayProps = {
   transcript: string;
   originalTranscript: string | null;
+  selectedText?: string | null;
   currentMode: string | null;
   asrTime: number | null;
   llmTime: number | null;
@@ -19,6 +20,7 @@ export type TranscriptDisplayProps = {
 export function TranscriptDisplay({
   transcript,
   originalTranscript,
+  selectedText,
   currentMode,
   asrTime,
   llmTime,
@@ -185,42 +187,70 @@ export function TranscriptDisplay({
         </div>
 
         {originalTranscript ? (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col border-r border-[var(--stone)] ">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs text-stone-400 flex items-center gap-1">
-                  <Mic size={12} /> {currentMode === "assistant" ? "用户问题" : "原始转录"}
+          <div className="flex flex-col gap-3">
+            {/* AI 助手模式的引用文本块 */}
+            {currentMode === "assistant" && selectedText && (
+              <div className="rounded-xl border border-[var(--stone)] bg-[var(--panel)] px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs text-stone-400 flex items-center gap-1.5">
+                    <Quote size={12} className="text-[var(--crail)]" />
+                    引用文本
+                  </div>
+                  <button
+                    onClick={(e) => onCopy(selectedText, e)}
+                    className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-white/60 transition-colors"
+                    title="复制引用文本"
+                  >
+                    <Copy size={12} />
+                  </button>
                 </div>
-                <button
-                  onClick={(e) => onCopy(originalTranscript, e)}
-                  className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-[var(--panel)] transition-colors"
-                  title="复制原始文本"
-                >
-                  <Copy size={12} />
-                </button>
+                <div className="overflow-y-auto custom-scroll max-h-[6rem] pr-1">
+                  <p className="text-stone-600 text-sm leading-relaxed whitespace-pre-wrap">
+                    {selectedText}
+                  </p>
+                </div>
               </div>
-              <div className="overflow-y-auto pr-2 custom-scroll max-h-[18rem]">
-                <p className="text-stone-600 text-base leading-relaxed whitespace-pre-wrap">{originalTranscript}</p>
-              </div>
-            </div>
+            )}
 
-            <div className="flex flex-col">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs text-[var(--crail)] flex items-center gap-1">
-                  <StatusIcon size={12} />
-                  {statusLabel}
+            {/* 双栏：用户问题/原始转录 + AI 回答/润色结果 */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col border-r border-[var(--stone)] ">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs text-stone-400 flex items-center gap-1">
+                    <Mic size={12} /> {currentMode === "assistant" ? "用户问题" : "原始转录"}
+                  </div>
+                  <button
+                    onClick={(e) => onCopy(originalTranscript, e)}
+                    className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-[var(--panel)] transition-colors"
+                    title="复制原始文本"
+                  >
+                    <Copy size={12} />
+                  </button>
                 </div>
-                <button
-                  onClick={(e) => onCopy(transcript, e)}
-                  className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-[var(--panel)] transition-colors"
-                  title="复制结果"
-                >
-                  <Copy size={12} />
-                </button>
+                <div className="overflow-y-auto pr-2 custom-scroll max-h-[18rem]">
+                  <p className="text-stone-600 text-base leading-relaxed whitespace-pre-wrap">{originalTranscript}</p>
+                </div>
               </div>
-              <div className="overflow-y-auto pr-2 custom-scroll max-h-[18rem]">
-                <p className="text-stone-800 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
-                <div ref={transcriptEndRef} />
+
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between mb-2">
+                  <div className={`text-xs flex items-center gap-1 ${currentMode === "assistant" ? "font-medium" : "text-[var(--crail)]"}`}
+                    style={currentMode === "assistant" ? { color: "#c96442" } : undefined}>
+                    <StatusIcon size={12} />
+                    {statusLabel}
+                  </div>
+                  <button
+                    onClick={(e) => onCopy(transcript, e)}
+                    className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-[var(--panel)] transition-colors"
+                    title="复制结果"
+                  >
+                    <Copy size={12} />
+                  </button>
+                </div>
+                <div className="overflow-y-auto pr-2 custom-scroll max-h-[18rem]">
+                  <p className="text-stone-800 text-base leading-relaxed whitespace-pre-wrap">{transcript}</p>
+                  <div ref={transcriptEndRef} />
+                </div>
               </div>
             </div>
           </div>

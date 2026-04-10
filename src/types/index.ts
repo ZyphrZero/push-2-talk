@@ -146,10 +146,11 @@ export interface DictionaryEntry {
 export interface TranscriptionResult {
   text: string;
   original_text: string | null;
+  selected_text?: string | null; // 用户选中的引用文本（仅 AI 助手模式有值）
   asr_time_ms: number;
   llm_time_ms: number | null;
   total_time_ms: number;
-  mode?: string; // "normal" | "smartcommand"
+  mode?: string; // "normal" | "assistant"
   inserted?: boolean;
 }
 
@@ -159,6 +160,7 @@ export interface HistoryRecord {
   timestamp: number;
   originalText: string;
   polishedText: string | null;
+  selectedText?: string | null;  // 用户选中的引用文本（仅 AI 助手模式有值）
   presetName: string | null;
   mode: "normal" | "assistant" | null;  // 处理模式
   asrTimeMs: number;

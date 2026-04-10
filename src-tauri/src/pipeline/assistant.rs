@@ -150,6 +150,7 @@ impl AssistantPipeline {
         Ok(PipelineResult::success(
             result,
             Some(asr_instruction), // 历史记录存储 ASR 原文
+            context.selected_text, // 引用文本传递到历史记录
             asr_time_ms,
             Some(llm_time_ms),
             TranscriptionMode::Assistant,

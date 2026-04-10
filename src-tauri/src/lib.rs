@@ -2324,6 +2324,7 @@ async fn handle_assistant_mode(
             let transcription_result = TranscriptionResult {
                 text: result.text,
                 original_text: result.original_text,
+                selected_text: result.selected_text,
                 asr_time_ms: result.asr_time_ms,
                 llm_time_ms: result.llm_time_ms,
                 total_time_ms: result.total_time_ms,
@@ -2995,6 +2996,8 @@ fn is_audio_skip_error(error: &anyhow::Error) -> bool {
 struct TranscriptionResult {
     text: String,
     original_text: Option<String>, // 原始 ASR 文本（仅开启 LLM 润色时有值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_text: Option<String>, // 用户选中的引用文本（仅 AI 助手模式有值）
     asr_time_ms: u64,
     llm_time_ms: Option<u64>,
     total_time_ms: u64,
@@ -3070,6 +3073,7 @@ async fn handle_transcription_result(
             let transcription_result = TranscriptionResult {
                 text: result.text,
                 original_text: result.original_text,
+                selected_text: result.selected_text,
                 asr_time_ms: result.asr_time_ms,
                 llm_time_ms: result.llm_time_ms,
                 total_time_ms: result.total_time_ms,

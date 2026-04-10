@@ -118,6 +118,9 @@ pub struct OpenAiClientConfig {
     pub api_key: String,
     /// 模型名称 (如 gpt-4, glm-4-flash)
     pub model: String,
+    /// 请求超时秒数（默认 30 秒）
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 impl OpenAiClientConfig {
@@ -130,7 +133,14 @@ impl OpenAiClientConfig {
             endpoint: endpoint.into(),
             api_key: api_key.into(),
             model: model.into(),
+            timeout_secs: None,
         }
+    }
+
+    /// 设置自定义请求超时
+    pub fn with_timeout_secs(mut self, secs: u64) -> Self {
+        self.timeout_secs = Some(secs);
+        self
     }
 }
 
@@ -150,8 +160,9 @@ pub struct OpenAiClient {
 impl OpenAiClient {
     /// 创建新的客户端实例
     pub fn new(config: OpenAiClientConfig) -> Self {
+        let timeout_secs = config.timeout_secs.unwrap_or(30);
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(5))
             .pool_idle_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10)
@@ -230,7 +241,12 @@ impl OpenAiClient {
             anyhow::bail!("OpenAI API 请求失败 ({}): {}", status, text);
         }
 
-        let payload: Value = response.json().await?;
+        let body = response.text().await?;
+        if body.is_empty() {
+            anyhow::bail!("OpenAI API 返回空响应体");
+        }
+        let payload: Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("OpenAI API 返回非 JSON 响应: {} (前100字符: {})", e, &body[..body.len().min(100)]))?;
 
         // 解析 OpenAI 格式的响应
         let content = payload["choices"]

@@ -145,6 +145,7 @@ impl NormalPipeline {
         Ok(PipelineResult::success(
             final_text,
             history_original,
+            None, // 普通模式无引用文本
             asr_time_ms,
             llm_time_ms,
             TranscriptionMode::Normal,

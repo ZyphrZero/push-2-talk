@@ -1,5 +1,5 @@
 import type { MouseEvent } from "react";
-import { MessageSquare, Clock, Copy, History, Mic, Sparkles, X } from "lucide-react";
+import { MessageSquare, Clock, Copy, History, Mic, Sparkles, X, Quote } from "lucide-react";
 import type { HistoryRecord } from "../../types";
 import { formatTimestamp } from "../../utils";
 
@@ -77,7 +77,7 @@ export function HistoryDrawer({
                   {record.success ? (
                     <div className="flex items-center gap-2">
                       {record.mode === "assistant" ? (
-                        <span className="text-[10px] bg-[rgba(59,130,246,0.12)] text-blue-500 px-1.5 py-0.5 rounded">
+                        <span className="text-[10px] bg-[rgba(217,119,87,0.12)] text-[var(--crail)] px-1.5 py-0.5 rounded">
                           AI 助手
                         </span>
                       ) : record.presetName && (
@@ -96,46 +96,102 @@ export function HistoryDrawer({
 
                 {record.success ? (
                   record.polishedText ? (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="flex flex-col min-h-0 bg-stone-50/60 rounded-xl p-3 border border-stone-200">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="text-xs font-semibold text-stone-500 tracking-wide flex items-center gap-1.5">
-                            <Mic size={12} /> {record.mode === "assistant" ? "语音指令" : "原始转写"}
+                    record.mode === "assistant" ? (
+                      /* AI 助手模式 — 引用文本 + 用户问题/AI 回答双栏 */
+                      <div className="space-y-2">
+                        {record.selectedText && (
+                          <div className="rounded-xl border border-[var(--stone)] bg-[var(--panel)] px-3 py-2">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="text-[11px] text-stone-400 flex items-center gap-1.5">
+                                <Quote size={10} className="text-[var(--crail)]" /> 引用文本
+                              </div>
+                              <button
+                                onClick={(e) => onCopyText(record.selectedText!, e)}
+                                className="p-1 rounded-md text-stone-400 hover:text-[var(--steel)] hover:bg-white/60 transition-colors"
+                                title="复制引用文本"
+                              >
+                                <Copy size={11} />
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-stone-600 leading-relaxed line-clamp-2 whitespace-pre-wrap">
+                              {record.selectedText}
+                            </p>
                           </div>
-                          <button
-                            onClick={(e) => onCopyText(record.originalText, e)}
-                            className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
-                            title="复制原始文本"
-                          >
-                            <Copy size={13} />
-                          </button>
+                        )}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="flex flex-col min-h-0 bg-stone-50/60 rounded-xl p-3 border border-stone-200">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-xs font-semibold text-stone-500 tracking-wide flex items-center gap-1.5">
+                                <Mic size={12} /> 用户问题
+                              </div>
+                              <button
+                                onClick={(e) => onCopyText(record.originalText, e)}
+                                className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
+                                title="复制用户问题"
+                              >
+                                <Copy size={13} />
+                              </button>
+                            </div>
+                            <p className="text-xs text-stone-600 line-clamp-3 leading-relaxed whitespace-pre-wrap">{record.originalText}</p>
+                          </div>
+                          <div className="flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] bg-[rgba(217,119,87,0.08)]">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="text-xs font-semibold tracking-wide flex items-center gap-1.5 text-[var(--crail)]">
+                                <MessageSquare size={12} /> AI 助手
+                              </div>
+                              <button
+                                onClick={(e) => onCopyText(record.polishedText!, e)}
+                                className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
+                                title="复制 AI 回答"
+                              >
+                                <Copy size={13} />
+                              </button>
+                            </div>
+                            <p className="text-xs text-stone-800 line-clamp-3 leading-relaxed font-semibold whitespace-pre-wrap">
+                              {record.polishedText}
+                            </p>
+                          </div>
                         </div>
-                        <p className="text-xs text-stone-600 line-clamp-3 leading-relaxed">{record.originalText}</p>
                       </div>
+                    ) : (
+                      /* 普通润色模式 */
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col min-h-0 bg-stone-50/60 rounded-xl p-3 border border-stone-200">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs font-semibold text-stone-500 tracking-wide flex items-center gap-1.5">
+                              <Mic size={12} /> 原始转写
+                            </div>
+                            <button
+                              onClick={(e) => onCopyText(record.originalText, e)}
+                              className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
+                              title="复制原始文本"
+                            >
+                              <Copy size={13} />
+                            </button>
+                          </div>
+                          <p className="text-xs text-stone-600 line-clamp-3 leading-relaxed whitespace-pre-wrap">{record.originalText}</p>
+                        </div>
 
-                      <div className={`flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] ${record.mode === "assistant"
-                          ? "bg-[rgba(59,130,246,0.08)]"
-                          : "bg-[rgba(217,119,87,0.08)]"
-                        }`}>
-                        <div className="flex items-center justify-between mb-2">
-                          <div className={`text-xs font-semibold tracking-wide flex items-center gap-1.5 ${record.mode === "assistant" ? "text-blue-500" : "text-[var(--crail)]"
-                            }`}>
-                            {record.mode === "assistant" ? <MessageSquare size={12} /> : <Sparkles size={12} />}
-                            {record.mode === "assistant" ? "AI 回复" : (record.presetName || "润色后")}
+                        <div className="flex flex-col min-h-0 rounded-xl p-3 border border-[var(--stone)] bg-[rgba(217,119,87,0.08)]">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs font-semibold tracking-wide flex items-center gap-1.5 text-[var(--crail)]">
+                              <Sparkles size={12} />
+                              {record.presetName || "润色后"}
+                            </div>
+                            <button
+                              onClick={(e) => onCopyText(record.polishedText!, e)}
+                              className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
+                              title="复制处理后文本"
+                            >
+                              <Copy size={13} />
+                            </button>
                           </div>
-                          <button
-                            onClick={(e) => onCopyText(record.polishedText!, e)}
-                            className="p-1.5 rounded-xl bg-white border border-[var(--stone)] hover:border-[rgba(176,174,165,0.75)] text-stone-500 hover:text-[var(--steel)] transition-colors shadow-sm"
-                            title="复制处理后文本"
-                          >
-                            <Copy size={13} />
-                          </button>
+                          <p className="text-xs text-stone-800 line-clamp-3 leading-relaxed font-semibold whitespace-pre-wrap">
+                            {record.polishedText}
+                          </p>
                         </div>
-                        <p className="text-xs text-stone-800 line-clamp-3 leading-relaxed font-semibold">
-                          {record.polishedText}
-                        </p>
                       </div>
-                    </div>
+                    )
                   ) : (
                     <div className="flex flex-col bg-stone-50/60 rounded-xl p-3 border border-stone-200">
                       <div className="flex items-center justify-between mb-2">

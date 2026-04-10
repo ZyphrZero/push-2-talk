@@ -11,7 +11,22 @@ export const loadHistory = (): HistoryRecord[] => {
 };
 
 export const saveHistory = (records: HistoryRecord[]): void => {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, MAX_HISTORY)));
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(records.slice(0, MAX_HISTORY)));
+  } catch {
+    // QuotaExceededError: 截断 selectedText 后重试
+    const trimmed = records.slice(0, MAX_HISTORY).map((r) => ({
+      ...r,
+      selectedText: r.selectedText ? r.selectedText.slice(0, 200) + "…" : r.selectedText,
+    }));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
+    } catch {
+      // 仍然失败则清空最旧的一半记录
+      const half = trimmed.slice(0, Math.ceil(trimmed.length / 2));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(half));
+    }
+  }
 };
 
 export const addHistoryRecord = (

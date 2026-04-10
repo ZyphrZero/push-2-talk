@@ -6,6 +6,7 @@ import { RecentActivity } from "../components/live/RecentActivity";
 export type DashboardPageProps = {
   transcript: string;
   originalTranscript: string | null;
+  selectedText: string | null;
   currentMode: string | null;
   asrTime: number | null;
   llmTime: number | null;
@@ -24,6 +25,7 @@ export type DashboardPageProps = {
 export function DashboardPage({
   transcript,
   originalTranscript,
+  selectedText,
   currentMode,
   asrTime,
   llmTime,
@@ -41,6 +43,7 @@ export function DashboardPage({
       <TranscriptDisplay
         transcript={transcript}
         originalTranscript={originalTranscript}
+        selectedText={selectedText}
         currentMode={currentMode}
         asrTime={asrTime}
         llmTime={llmTime}

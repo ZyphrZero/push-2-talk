@@ -37,6 +37,7 @@ export type UseTauriEventListenersParams = {
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setTranscript: React.Dispatch<React.SetStateAction<string>>;
   setOriginalTranscript: React.Dispatch<React.SetStateAction<string | null>>;
+  setSelectedText: React.Dispatch<React.SetStateAction<string | null>>;
   setCurrentMode: React.Dispatch<React.SetStateAction<string | null>>;
   setAsrTime: React.Dispatch<React.SetStateAction<number | null>>;
   setLlmTime: React.Dispatch<React.SetStateAction<number | null>>;
@@ -77,6 +78,7 @@ export function useTauriEventListeners({
   setError,
   setTranscript,
   setOriginalTranscript,
+  setSelectedText,
   setCurrentMode,
   setAsrTime,
   setLlmTime,
@@ -169,6 +171,7 @@ export function useTauriEventListeners({
           setTranscript(result.text);
           // 只要有 original_text 就显示双栏（原始转写 + 润色结果）
           setOriginalTranscript(result.original_text || null);
+          setSelectedText(result.selected_text || null);
           setCurrentMode(result.mode || null);
           setAsrTime(result.asr_time_ms);
           setLlmTime(result.llm_time_ms);
@@ -204,6 +207,7 @@ export function useTauriEventListeners({
             originalText: result.original_text || result.text,
             // 只要有 original_text 就设置 polishedText
             polishedText: hasPolishing ? result.text : null,
+            selectedText: result.selected_text || null,
             presetName,
             mode,
             asrTimeMs: result.asr_time_ms,

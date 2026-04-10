@@ -90,6 +90,7 @@ function App() {
   const [status, setStatus] = useState<AppStatus>("idle");
   const [transcript, setTranscript] = useState("");
   const [originalTranscript, setOriginalTranscript] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [asrTime, setAsrTime] = useState<number | null>(null);
@@ -284,6 +285,7 @@ function App() {
     setError,
     setTranscript,
     setOriginalTranscript,
+    setSelectedText,
     setCurrentMode,
     setAsrTime,
     setLlmTime,
@@ -701,6 +703,7 @@ function App() {
           <DashboardPage
             transcript={transcript}
             originalTranscript={originalTranscript}
+            selectedText={selectedText}
             currentMode={currentMode}
             asrTime={asrTime}
             llmTime={llmTime}
